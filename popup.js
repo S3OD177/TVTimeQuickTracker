@@ -469,7 +469,7 @@ function searchResultHTML(show) {
         <div class="search-title">${esc(show.name)}</div>
         <div class="search-meta">${show.year || ""}</div>
       </div>
-      <button class="follow-btn ${show.following ? "following" : ""}" data-sid="${show.id}" onclick="event.stopPropagation()">
+      <button class="follow-btn ${show.following ? "following" : ""}" data-sid="${show.id}">
         ${show.following ? "✓ Following" : "+ Follow"}
       </button>
     </div>`;
