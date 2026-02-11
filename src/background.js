@@ -1,5 +1,7 @@
 // TV Time Quick Tracker - Background SW v5
 const API = "https://api2.tozelabs.com/v2";
+const SEARCH_API = "https://search.tvtime.com/v1/search";
+const SEARCH_API_KEY = "LhqxB7GE9a95beFHqiNC85GHdrX8hNi34H2uQ7QG";
 const AUTH_KEYS = ["auth", "uid", "bearer"];
 const LEGACY_AUTH_KEYS = ["auth", "uid", "bearer", "udata"];
 const SHOW_ENRICH_LIMIT = 24;
@@ -8,9 +10,7 @@ const UPNEXT_ENRICH_LIMIT = 40;
 const UPNEXT_ENRICH_CONCURRENCY = 4;
 const UPNEXT_NAME_ENRICH_LIMIT = 25;
 const UPNEXT_NAME_ENRICH_CONCURRENCY = 3;
-const API_LAB_SAFE_SHOW_ID = "__tvtime_probe_show__";
-const API_LAB_SAFE_EPISODE_ID = "__tvtime_probe_episode__";
-const API_LAB_EXPECTED_MUTATION_STATUSES = new Set([400, 404, 405, 409, 410, 422]);
+const EPISODE_DETAILS_CONCURRENCY = 6;
 const showDetailsCache = new Map();
 const showNamePosterCache = new Map();
 const seasonProbePosterCache = new Map();
@@ -155,9 +155,12 @@ function mutationErrorFromPayload(status, payload) {
 function isLikelyPlaceholderPoster(url) {
   const s = String(url || "").toLowerCase();
   if (!s) return false;
+  if (s.startsWith("data:image/")) return true;
   return (
+    s.includes("/default-images/") ||
     s.includes("placeholder") ||
     s.includes("default") ||
+    s.includes("landscape-default") ||
     s.includes("noimage") ||
     s.includes("no-image") ||
     s.includes("missing") ||
@@ -273,55 +276,6 @@ function showId(show) {
   return show?.id || show?.series_id || show?.show_id || "";
 }
 
-function looksLikeShow(item) {
-  if (!item || typeof item !== "object") return false;
-  if (looksLikeEpisode(item)) return false;
-  const hasId = ("id" in item) || ("series_id" in item) || ("show_id" in item);
-  const hasName = ("name" in item) || ("title" in item);
-  return hasId && hasName;
-}
-
-function normalizeShowList(payload) {
-  if (Array.isArray(payload)) {
-    const sample = payload.find(item => item && typeof item === "object");
-    return looksLikeShow(sample) ? payload : [];
-  }
-  if (!payload || typeof payload !== "object") return [];
-
-  const candidates = [
-    payload.shows,
-    payload.series,
-    payload.results,
-    payload.data,
-    payload.items,
-    payload.user?.shows,
-    payload.user?.series,
-  ];
-  for (const candidate of candidates) {
-    if (!Array.isArray(candidate) || candidate.length === 0) continue;
-    const sample = candidate.find(item => item && typeof item === "object");
-    if (looksLikeShow(sample)) return candidate;
-  }
-  return [];
-}
-
-function topLevelKeys(payload) {
-  if (Array.isArray(payload)) {
-    const first = payload.find(item => item && typeof item === "object");
-    const firstKeys = first ? Object.keys(first).slice(0, 19) : [];
-    return [`[array:${payload.length}]`, ...firstKeys];
-  }
-  if (payload && typeof payload === "object") {
-    return Object.keys(payload).slice(0, 20);
-  }
-  return [`[${typeof payload}]`];
-}
-
-function sampleObjectKeys(list) {
-  const sample = (Array.isArray(list) ? list : []).find(item => item && typeof item === "object");
-  return sample ? Object.keys(sample).slice(0, 20) : [];
-}
-
 function showHasPoster(show) {
   return Boolean(show?.poster || show?.image || show?.cover || show?.artwork);
 }
@@ -369,12 +323,27 @@ function mediaUrlFromCandidate(candidate, depth = 0) {
     if (url) return url;
   }
 
+  for (const value of Object.values(candidate)) {
+    const url = mediaUrlFromCandidate(value, depth + 1);
+    if (url) return url;
+  }
+
   return "";
 }
 
 function pickPoster(entity) {
   if (!entity || typeof entity !== "object") return "";
   const candidates = [
+    entity.show?.poster,
+    entity.show?.image,
+    entity.show?.cover,
+    entity.show?.artwork,
+    entity.show?.images?.poster,
+    entity.show?.images?.cover,
+    entity.show?.all_images?.poster,
+    entity.show?.all_images?.cover,
+    entity.show?.all_images,
+    entity.show,
     entity.poster,
     entity.image,
     entity.cover,
@@ -385,25 +354,22 @@ function pickPoster(entity) {
     entity.cover_url,
     entity.show_poster,
     entity.show_image,
-    entity.show?.poster,
-    entity.show?.image,
-    entity.show?.cover,
-    entity.show?.artwork,
     entity.images?.poster,
     entity.images?.cover,
     entity.images?.image,
     entity.all_images?.poster,
     entity.all_images?.cover,
     entity.all_images,
-    entity.show?.all_images,
-    entity.show,
   ];
 
+  let placeholder = "";
   for (const candidate of candidates) {
     const url = mediaUrlFromCandidate(candidate);
-    if (url) return url;
+    if (!url) continue;
+    if (!isLikelyPlaceholderPoster(url)) return url;
+    if (!placeholder) placeholder = url;
   }
-  return "";
+  return placeholder;
 }
 
 function pickShowIdFromEpisode(ep) {
@@ -474,21 +440,55 @@ async function searchPosterByName(showName) {
   let poster = "";
   try {
     const q = encodeURIComponent(showName);
-    const urls = [
-      `https://msearch.tvtime.com/v1/search?q=${q}&limit=5`,
-      `https://msearch.tvtime.com/v1/search?query=${q}&limit=5`,
-    ];
-    for (const url of urls) {
-      const r = await fetchT(url, {}, 8000);
-      if (!r.ok) continue;
-      const payload = await r.json();
-      const rows = pickSearchResults(payload);
-      const exact = rows.find(item => normalizeName(item?.name || item?.title) === key);
-      const chosen = exact || rows[0];
-      poster = pickPoster(chosen);
-      if (poster) break;
+    const a = await getAuth();
+    const authHeaders = a ? authHeadersForRequest(a) : [];
+    if (authHeaders.length) {
+      for (const authorization of authHeaders) {
+        const urls = [
+          `${SEARCH_API}/series,movie?q=${q}&offset=0&limit=5`,
+          `${SEARCH_API}/series?q=${q}&offset=0&limit=5`,
+        ];
+        for (const url of urls) {
+          const r = await fetchT(url, {
+            headers: {
+              Authorization: authorization,
+              "x-api-key": SEARCH_API_KEY,
+            },
+          }, 9000);
+          if (!r.ok) continue;
+          const payload = await r.json();
+          const rows = pickSearchResults(payload);
+          const exact = rows.find(item => normalizeName(item?.name || item?.title) === key);
+          const chosen = exact || rows[0];
+          poster = pickPoster(chosen);
+          if (poster) break;
+        }
+        if (poster) break;
+      }
     }
-  } catch {}
+  } catch (e) {
+    if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
+  }
+
+  if (!poster) {
+    try {
+      const q = encodeURIComponent(showName);
+      const urls = [
+        `https://msearch.tvtime.com/v1/search?q=${q}&limit=5`,
+        `https://msearch.tvtime.com/v1/search?query=${q}&limit=5`,
+      ];
+      for (const url of urls) {
+        const r = await fetchT(url, {}, 8000);
+        if (!r.ok) continue;
+        const payload = await r.json();
+        const rows = pickSearchResults(payload);
+        const exact = rows.find(item => normalizeName(item?.name || item?.title) === key);
+        const chosen = exact || rows[0];
+        poster = pickPoster(chosen);
+        if (poster) break;
+      }
+    } catch {}
+  }
 
   showNamePosterCache.set(key, poster || "");
   return poster || "";
@@ -695,6 +695,44 @@ function mergeEpisode(prev, next, fallbackSeason = 0) {
   if (!merged.episode_number && merged.number) merged.episode_number = merged.number;
 
   return merged;
+}
+
+async function enrichEpisodesWithDetails(episodes) {
+  const rows = Array.isArray(episodes) ? episodes.map(ep => ({ ...ep })) : [];
+  const byId = new Map();
+  rows.forEach((ep, idx) => {
+    const id = String(ep?.id || ep?.episode_id || "").trim();
+    if (id) byId.set(id, idx);
+  });
+
+  const ids = Array.from(byId.keys());
+  if (!ids.length) return rows;
+
+  await runWithLimit(ids, EPISODE_DETAILS_CONCURRENCY, async rawId => {
+    const id = encodeURIComponent(rawId);
+    try {
+      const details = await req(
+        `/episode/${id}?fields=id,episode_id,name,title,number,episode_number,season_number,is_watched,seen,seen_date`,
+        { timeout: 9000 }
+      );
+      if (!details || typeof details !== "object" || details.result === "KO") return;
+
+      const resolvedId = String(details.id || details.episode_id || rawId).trim();
+      const idx = byId.get(resolvedId);
+      if (idx === undefined) return;
+
+      const existing = rows[idx];
+      const fallbackSeason = parsePositiveInt(
+        existing?.season_number ?? existing?.season?.number ?? existing?.season,
+        0
+      );
+      rows[idx] = mergeEpisode(existing, details, fallbackSeason);
+    } catch (e) {
+      if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
+    }
+  });
+
+  return rows;
 }
 
 function deriveUpNextFromShows(shows) {
@@ -919,6 +957,8 @@ async function getUpNext() {
   if (!a) throw new Error("NOT_LOGGED_IN");
 
   const endpoints = [
+    `/user/${a.uid}/to_watch?offset=0&limit=100&include_country=1`,
+    `/user/${a.uid}/to_watch?page=1&limit=100&include_country=1`,
     `/user/${a.uid}/to_watch`,
     `/user/${a.uid}?fields=to_watch.limit(-1)`,
     "/to_watch",
@@ -1102,608 +1142,12 @@ async function getSeasonEpisodes(showId, seasonNum) {
     }
   }
 
-  const merged = Array.from(byEpisode.values())
+  let merged = Array.from(byEpisode.values())
     .sort((a, b) => parsePositiveInt(a.number ?? a.episode_number, 0) - parsePositiveInt(b.number ?? b.episode_number, 0));
+  if (merged.length > 0) {
+    merged = await enrichEpisodesWithDetails(merged);
+  }
   return { episodes: merged };
-}
-
-// ========== API INSPECTOR / API LAB ==========
-function nowMs() {
-  if (typeof performance !== "undefined" && typeof performance.now === "function") {
-    return performance.now();
-  }
-  return Date.now();
-}
-
-function payloadSnapshot(payload) {
-  const shows = normalizeShowList(payload);
-  const episodes = normalizeEpisodeList(payload);
-  const seasons = normalizeSeasons(payload);
-  return {
-    topKeys: topLevelKeys(payload),
-    counts: {
-      shows: shows.length,
-      episodes: episodes.length,
-      seasons: seasons.length,
-    },
-    sampleKeys: {
-      show: sampleObjectKeys(shows),
-      episode: sampleObjectKeys(episodes),
-      season: sampleObjectKeys(seasons),
-    },
-  };
-}
-
-function serializeProbeBody(body) {
-  if (body === undefined) return "";
-  try {
-    return JSON.stringify(body);
-  } catch {
-    return String(body);
-  }
-}
-
-function dedupeProbes(probes) {
-  const seen = new Set();
-  const out = [];
-  for (const probe of probes) {
-    const endpoint = probe.url || probe.path || "";
-    const key = `${probe.method || "GET"}|${endpoint}|${serializeProbeBody(probe.body)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(probe);
-  }
-  return out;
-}
-
-async function fetchAuthorizedDetailed(path, opts = {}) {
-  const a = await getAuth();
-  if (!a) throw new Error("NOT_LOGGED_IN");
-
-  const {
-    timeout = 15000,
-    method = "GET",
-    headers = {},
-    body,
-    forceBasic = false,
-  } = opts;
-
-  const url = path.startsWith("http") ? path : `${API}${path}`;
-  const authHeaders = authHeadersForRequest(a, forceBasic);
-  if (!authHeaders.length) throw new Error("NOT_LOGGED_IN");
-
-  const isObjBody = body && typeof body === "object" && !(body instanceof FormData);
-  const requestBody = isObjBody ? JSON.stringify(body) : body;
-
-  for (let i = 0; i < authHeaders.length; i++) {
-    const authorization = authHeaders[i];
-    const r = await fetchT(url, {
-      method,
-      headers: {
-        Authorization: authorization,
-        "User-Agent": "TVTime Wrapper",
-        ...(isObjBody ? { "Content-Type": "application/json" } : {}),
-        ...headers,
-      },
-      ...(requestBody !== undefined ? { body: requestBody } : {}),
-    }, timeout);
-    const text = await r.text();
-    const payload = parseJSON(text);
-
-    if ((r.status === 401 || r.status === 403) && i < authHeaders.length - 1) {
-      continue;
-    }
-    if (r.status === 401 || r.status === 403) {
-      await clearAuthStorage();
-      throw new Error("AUTH_EXPIRED");
-    }
-
-    return {
-      status: r.status,
-      payload,
-      text,
-      url,
-      method,
-    };
-  }
-
-  await clearAuthStorage();
-  throw new Error("AUTH_EXPIRED");
-}
-
-function normalizeProbeResult(result) {
-  const normalized = {
-    ...result,
-    durationMs: Math.max(0, Math.round(Number(result.durationMs) || 0)),
-  };
-  normalized.ok = normalized.outcome === "ok" || normalized.outcome === "reachable";
-  return normalized;
-}
-
-function inspectModeFromProbe(probe) {
-  if (probe.kind === "mutation") {
-    return probe.safeRouteCheck ? "safe-route" : "live";
-  }
-  return "read";
-}
-
-async function runProbeDetailed(probe, timeout = 12000) {
-  if (probe.skipReason) {
-    return normalizeProbeResult({
-      endpoint: probe.url || probe.path || "",
-      method: probe.method || "GET",
-      group: probe.group || "misc",
-      kind: probe.kind || "read",
-      mode: inspectModeFromProbe(probe),
-      status: 0,
-      durationMs: 0,
-      outcome: "skipped",
-      error: probe.skipReason,
-      topKeys: [],
-      counts: { shows: 0, episodes: 0, seasons: 0 },
-      sampleKeys: { show: [], episode: [], season: [] },
-    });
-  }
-
-  const start = nowMs();
-  const endpoint = probe.url || probe.path || "";
-  try {
-    let status = 0;
-    let payload = null;
-    if (probe.public) {
-      const r = await fetchT(endpoint, { headers: { "User-Agent": "TVTime Wrapper" } }, timeout);
-      const text = await r.text();
-      payload = parseJSON(text);
-      status = r.status;
-    } else {
-      const res = await fetchAuthorizedDetailed(probe.path, {
-        method: probe.method || "GET",
-        body: probe.body,
-        timeout,
-      });
-      payload = res.payload;
-      status = res.status;
-    }
-
-    const snapshot = payloadSnapshot(payload);
-    const payloadKo = payload && typeof payload === "object" && payload.result === "KO";
-    const payloadError = payloadKo ? String(payload.message || payload.error || "KO") : "";
-    let outcome = status >= 200 && status < 300 && !payloadKo ? "ok" : "error";
-    if (probe.kind === "mutation" && probe.safeRouteCheck && API_LAB_EXPECTED_MUTATION_STATUSES.has(status)) {
-      outcome = "reachable";
-    }
-
-    return normalizeProbeResult({
-      endpoint,
-      method: probe.method || "GET",
-      group: probe.group || "misc",
-      kind: probe.kind || "read",
-      mode: inspectModeFromProbe(probe),
-      status,
-      durationMs: nowMs() - start,
-      outcome,
-      ...(payloadError ? { error: payloadError } : {}),
-      topKeys: snapshot.topKeys,
-      counts: snapshot.counts,
-      sampleKeys: snapshot.sampleKeys,
-      body: probe.body !== undefined ? serializeProbeBody(probe.body) : "",
-    });
-  } catch (e) {
-    return normalizeProbeResult({
-      endpoint,
-      method: probe.method || "GET",
-      group: probe.group || "misc",
-      kind: probe.kind || "read",
-      mode: inspectModeFromProbe(probe),
-      status: 0,
-      durationMs: nowMs() - start,
-      outcome: "error",
-      error: e.message || "UNKNOWN_ERROR",
-      topKeys: [],
-      counts: { shows: 0, episodes: 0, seasons: 0 },
-      sampleKeys: { show: [], episode: [], season: [] },
-      body: probe.body !== undefined ? serializeProbeBody(probe.body) : "",
-    });
-  }
-}
-
-function summarizeProbeResults(results) {
-  const summary = {
-    total: results.length,
-    ok: 0,
-    reachable: 0,
-    error: 0,
-    skipped: 0,
-    avgLatencyMs: 0,
-    statusHistogram: {},
-    byGroup: {},
-  };
-  let latencySum = 0;
-  let latencyCount = 0;
-
-  for (const probe of results) {
-    if (probe.outcome === "ok") summary.ok += 1;
-    else if (probe.outcome === "reachable") summary.reachable += 1;
-    else if (probe.outcome === "skipped") summary.skipped += 1;
-    else summary.error += 1;
-
-    if (probe.status > 0) {
-      const key = String(probe.status);
-      summary.statusHistogram[key] = (summary.statusHistogram[key] || 0) + 1;
-    }
-
-    if (probe.durationMs > 0) {
-      latencySum += probe.durationMs;
-      latencyCount += 1;
-    }
-
-    const group = probe.group || "misc";
-    if (!summary.byGroup[group]) {
-      summary.byGroup[group] = { total: 0, ok: 0, reachable: 0, error: 0, skipped: 0 };
-    }
-    const bucket = summary.byGroup[group];
-    bucket.total += 1;
-    if (probe.outcome === "ok") bucket.ok += 1;
-    else if (probe.outcome === "reachable") bucket.reachable += 1;
-    else if (probe.outcome === "skipped") bucket.skipped += 1;
-    else bucket.error += 1;
-  }
-
-  summary.avgLatencyMs = latencyCount ? Math.round(latencySum / latencyCount) : 0;
-  return summary;
-}
-
-async function resolveApiLabContext(authUserId) {
-  const context = {
-    uid: String(authUserId || ""),
-    sampleShowId: "",
-    sampleEpisodeId: "",
-    sampleSeasonNumber: 1,
-  };
-
-  try {
-    const watching = await getWatchingShows();
-    context.sampleShowId = String(showId((watching.shows || [])[0]) || "");
-  } catch {}
-
-  try {
-    const upNext = await getUpNext();
-    const first = (normalizeEpisodeList(upNext) || [])[0] || {};
-    context.sampleEpisodeId = String(first.id || first.episode_id || "");
-    const fromEpisode = String(
-      first.show_id ||
-      first.series_id ||
-      first.show?.id ||
-      first.show?.series_id ||
-      ""
-    );
-    if (!context.sampleShowId && fromEpisode) {
-      context.sampleShowId = fromEpisode;
-    }
-    const season = parsePositiveInt(
-      first.season_number ?? first.season?.number ?? first.season,
-      1
-    );
-    if (season > 0) context.sampleSeasonNumber = season;
-  } catch {}
-
-  return context;
-}
-
-function buildReadProbes(uid, context, query = "game") {
-  const q = encodeURIComponent(query || "game");
-  const sid = encodeURIComponent(context.sampleShowId || API_LAB_SAFE_SHOW_ID);
-  const n = parsePositiveInt(context.sampleSeasonNumber, 1) || 1;
-
-  return dedupeProbes([
-    { kind: "read", group: "account", method: "GET", path: `/user/${uid}` },
-    { kind: "read", group: "account", method: "GET", path: `/user/${uid}?fields=shows.fields(id,series_id,name,title,poster,image,is_following,is_followed).limit(-1)` },
-    { kind: "read", group: "account", method: "GET", path: `/user/${uid}?fields=shows.limit(-1)` },
-    { kind: "read", group: "account", method: "GET", path: `/user/${uid}?fields=to_watch.limit(-1)` },
-    { kind: "read", group: "account", method: "GET", path: `/user/${uid}?fields=up_next.limit(-1)` },
-    { kind: "read", group: "account", method: "GET", path: `/user/${uid}?fields=next_episodes.limit(-1)` },
-    { kind: "read", group: "upnext", method: "GET", path: `/user/${uid}/to_watch` },
-    { kind: "read", group: "upnext", method: "GET", path: `/user/${uid}/up_next` },
-    { kind: "read", group: "upnext", method: "GET", path: "/to_watch" },
-    { kind: "read", group: "upnext", method: "GET", path: "/up_next" },
-    { kind: "read", group: "search", method: "GET", path: `/show/search?q=${q}` },
-    { kind: "read", group: "search", method: "GET", path: `/search?q=${q}` },
-    { kind: "read", group: "search", method: "GET", path: `/series/search?q=${q}` },
-    { kind: "read", group: "search", method: "GET", path: `/search/shows?q=${q}` },
-    { kind: "read", group: "search", method: "GET", public: true, url: `https://msearch.tvtime.com/v1/search?q=${q}&limit=5` },
-    { kind: "read", group: "show", method: "GET", path: `/show/${sid}` },
-    { kind: "read", group: "show", method: "GET", path: `/series/${sid}` },
-    { kind: "read", group: "show", method: "GET", path: `/show/${sid}/seasons` },
-    { kind: "read", group: "show", method: "GET", path: `/series/${sid}/seasons` },
-    { kind: "read", group: "show", method: "GET", path: `/user/${uid}/show/${sid}/seasons` },
-    { kind: "read", group: "show", method: "GET", path: `/user/${uid}/series/${sid}/seasons` },
-    { kind: "read", group: "show", method: "GET", path: `/user/${uid}/shows/${sid}/seasons` },
-    { kind: "read", group: "show", method: "GET", path: `/user/${uid}/show/${sid}` },
-    { kind: "read", group: "show", method: "GET", path: `/user/${uid}/series/${sid}` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/show/${sid}/season/${n}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/series/${sid}/season/${n}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/show/${sid}/seasons/${n}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/series/${sid}/seasons/${n}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/shows/${sid}/season/${n}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/shows/${sid}/seasons/${n}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/show/${sid}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/series/${sid}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/shows/${sid}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/show/${sid}/episodes?season=${n}` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/series/${sid}/episodes?season=${n}` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/shows/${sid}/episodes?season=${n}` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/show/${sid}?fields=seasons.limit(-1)` },
-    { kind: "read", group: "season", method: "GET", path: `/user/${uid}/series/${sid}?fields=seasons.limit(-1)` },
-    { kind: "read", group: "season", method: "GET", path: `/show/${sid}/season/${n}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/series/${sid}/season/${n}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/show/${sid}/seasons/${n}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/series/${sid}/seasons/${n}/episodes` },
-    { kind: "read", group: "season", method: "GET", path: `/show/${sid}/season/${n}/episodes?fields=episodes.fields(id,episode_id,name,title,number,episode_number,season_number,air_date,is_watched,seen,seen_date)` },
-    { kind: "read", group: "season", method: "GET", path: `/series/${sid}/season/${n}/episodes?fields=episodes.fields(id,episode_id,name,title,number,episode_number,season_number,air_date,is_watched,seen,seen_date)` },
-    { kind: "read", group: "season", method: "GET", path: `/show/${sid}/season/${n}` },
-    { kind: "read", group: "season", method: "GET", path: `/series/${sid}/season/${n}` },
-  ]);
-}
-
-function mutationMatrixForAudit(encodedShowId, encodedEpisodeId) {
-  return [
-    {
-      group: "mutation-episode",
-      path: `/episodes/${encodedEpisodeId}/watched`,
-      methods: ["PUT", "POST"],
-      bodies: [undefined, { watched: true }, { is_watched: true }, { seen: true }],
-    },
-    {
-      group: "mutation-episode",
-      path: `/episode/${encodedEpisodeId}/watched`,
-      methods: ["PUT", "POST"],
-      bodies: [undefined, { watched: true }, { is_watched: true }, { seen: true }],
-    },
-    {
-      group: "mutation-episode",
-      path: `/episodes/${encodedEpisodeId}/seen`,
-      methods: ["PUT", "POST"],
-      bodies: [undefined, { seen: true }, { is_watched: true }],
-    },
-    {
-      group: "mutation-episode",
-      path: `/episode/${encodedEpisodeId}/seen`,
-      methods: ["PUT", "POST"],
-      bodies: [undefined, { seen: true }, { is_watched: true }],
-    },
-    {
-      group: "mutation-episode",
-      path: `/episodes/${encodedEpisodeId}/watched`,
-      methods: ["DELETE"],
-      bodies: [undefined],
-    },
-    {
-      group: "mutation-episode",
-      path: `/episode/${encodedEpisodeId}/watched`,
-      methods: ["DELETE"],
-      bodies: [undefined],
-    },
-    {
-      group: "mutation-episode",
-      path: `/episodes/${encodedEpisodeId}/seen`,
-      methods: ["DELETE", "POST", "PUT"],
-      bodies: [undefined, { seen: false }, { is_watched: false }],
-    },
-    {
-      group: "mutation-episode",
-      path: `/episode/${encodedEpisodeId}/seen`,
-      methods: ["DELETE", "POST", "PUT"],
-      bodies: [undefined, { seen: false }, { is_watched: false }],
-    },
-    {
-      group: "mutation-show",
-      path: `/show/${encodedShowId}/follow`,
-      methods: ["PUT", "POST"],
-      bodies: [undefined],
-    },
-    {
-      group: "mutation-show",
-      path: `/series/${encodedShowId}/follow`,
-      methods: ["PUT", "POST"],
-      bodies: [undefined],
-    },
-    {
-      group: "mutation-show",
-      path: `/show/${encodedShowId}/following`,
-      methods: ["PUT", "POST"],
-      bodies: [undefined, { following: true }, { is_following: true }],
-    },
-    {
-      group: "mutation-show",
-      path: `/series/${encodedShowId}/following`,
-      methods: ["PUT", "POST"],
-      bodies: [undefined, { following: true }, { is_following: true }],
-    },
-    {
-      group: "mutation-show",
-      path: `/show/${encodedShowId}/follow`,
-      methods: ["DELETE"],
-      bodies: [undefined],
-    },
-    {
-      group: "mutation-show",
-      path: `/series/${encodedShowId}/follow`,
-      methods: ["DELETE"],
-      bodies: [undefined],
-    },
-    {
-      group: "mutation-show",
-      path: `/show/${encodedShowId}/following`,
-      methods: ["DELETE", "POST", "PUT"],
-      bodies: [undefined, { following: false }, { is_following: false }],
-    },
-    {
-      group: "mutation-show",
-      path: `/series/${encodedShowId}/following`,
-      methods: ["DELETE", "POST", "PUT"],
-      bodies: [undefined, { following: false }, { is_following: false }],
-    },
-  ];
-}
-
-function buildMutationProbes(context, options = {}) {
-  if (options.includeMutationRoutes === false) {
-    return { probes: [], mode: "disabled", notes: ["Mutation route checks disabled by user option."] };
-  }
-
-  const notes = [];
-  let mode = options.mutationMode === "live" ? "live" : "safe";
-  let showId = String(context.sampleShowId || "");
-  let episodeId = String(context.sampleEpisodeId || "");
-
-  if (mode === "live" && (!showId || !episodeId)) {
-    notes.push("Live mutation mode requested but sample IDs were missing. Falling back to safe mode.");
-    mode = "safe";
-  }
-
-  if (mode === "safe") {
-    showId = API_LAB_SAFE_SHOW_ID;
-    episodeId = API_LAB_SAFE_EPISODE_ID;
-    notes.push("Safe mutation mode uses placeholder IDs to avoid changing your account state.");
-  }
-
-  const sid = encodeURIComponent(showId || API_LAB_SAFE_SHOW_ID);
-  const eid = encodeURIComponent(episodeId || API_LAB_SAFE_EPISODE_ID);
-  const templates = mutationMatrixForAudit(sid, eid);
-  const probes = [];
-  for (const template of templates) {
-    const methods = template.methods?.length ? template.methods : ["POST"];
-    const bodies = template.bodies?.length ? template.bodies : [undefined];
-    for (const method of methods) {
-      for (const body of bodies) {
-        probes.push({
-          kind: "mutation",
-          group: template.group,
-          method,
-          path: template.path,
-          body,
-          safeRouteCheck: mode !== "live",
-        });
-      }
-    }
-  }
-  return { probes: dedupeProbes(probes), mode, notes };
-}
-
-async function inspectEndpoint(path, timeout = 12000) {
-  const probe = path.startsWith("https://")
-    ? { kind: "read", group: "inspect", method: "GET", public: true, url: path }
-    : { kind: "read", group: "inspect", method: "GET", path };
-  const result = await runProbeDetailed(probe, timeout);
-  if (result.outcome === "error" || result.outcome === "skipped") {
-    return {
-      endpoint: path,
-      ok: false,
-      status: result.status,
-      durationMs: result.durationMs,
-      error: result.error || "UNKNOWN_ERROR",
-    };
-  }
-  return {
-    endpoint: path,
-    ok: true,
-    status: result.status,
-    durationMs: result.durationMs,
-    topKeys: result.topKeys,
-    counts: result.counts,
-    sampleKeys: result.sampleKeys,
-  };
-}
-
-async function inspectApiSurface() {
-  const a = await getAuth();
-  if (!a) throw new Error("NOT_LOGGED_IN");
-
-  const probes = [
-    `/user/${a.uid}`,
-    `/user/${a.uid}?fields=shows.limit(-1)`,
-    `/user/${a.uid}?fields=to_watch.limit(-1)`,
-    `/user/${a.uid}?fields=up_next.limit(-1)`,
-    `/user/${a.uid}/to_watch`,
-    `/user/${a.uid}/up_next`,
-    "/to_watch",
-    "/up_next",
-    "/search?q=game",
-    "/show/search?q=game",
-    "https://msearch.tvtime.com/v1/search?q=game&limit=3",
-  ];
-
-  let sampleShowId = "";
-  try {
-    const watching = await getWatchingShows();
-    sampleShowId = String(showId((watching.shows || [])[0]) || "");
-  } catch {}
-
-  if (sampleShowId) {
-    probes.push(`/show/${sampleShowId}`);
-    probes.push(`/show/${sampleShowId}/seasons`);
-    probes.push(`/show/${sampleShowId}/season/1/episodes`);
-    probes.push(`/user/${a.uid}/show/${sampleShowId}/seasons`);
-    probes.push(`/user/${a.uid}/show/${sampleShowId}/season/1/episodes`);
-    probes.push(`/user/${a.uid}/show/${sampleShowId}/episodes`);
-  }
-
-  const results = [];
-  for (const path of probes) {
-    results.push(await inspectEndpoint(path));
-  }
-
-  return {
-    generatedAt: new Date().toISOString(),
-    userId: a.uid,
-    sampleShowId,
-    probes: results,
-  };
-}
-
-async function runApiLab(options = {}) {
-  const a = await getAuth();
-  if (!a) throw new Error("NOT_LOGGED_IN");
-
-  const timeout = Math.max(4000, Math.min(parsePositiveInt(options.timeout, 12000), 30000));
-  const concurrency = Math.max(1, Math.min(parsePositiveInt(options.concurrency, 4), 8));
-  const query = String(options.query || "game").trim() || "game";
-
-  const context = await resolveApiLabContext(a.uid);
-  const readProbes = buildReadProbes(a.uid, context, query);
-  const mutationPlan = buildMutationProbes(context, {
-    includeMutationRoutes: options.includeMutationRoutes !== false,
-    mutationMode: options.mutationMode,
-  });
-  const allProbes = dedupeProbes([...readProbes, ...mutationPlan.probes]);
-
-  const indexed = allProbes.map((probe, index) => ({ probe, index }));
-  const results = new Array(indexed.length);
-  await runWithLimit(indexed, concurrency, async item => {
-    results[item.index] = await runProbeDetailed(item.probe, timeout);
-  });
-
-  const sorted = results.slice().sort((a, b) => {
-    if ((a.group || "") !== (b.group || "")) return String(a.group || "").localeCompare(String(b.group || ""));
-    if ((a.endpoint || "") !== (b.endpoint || "")) return String(a.endpoint || "").localeCompare(String(b.endpoint || ""));
-    return String(a.method || "").localeCompare(String(b.method || ""));
-  });
-
-  return {
-    generatedAt: new Date().toISOString(),
-    userId: a.uid,
-    options: {
-      includeMutationRoutes: options.includeMutationRoutes !== false,
-      mutationMode: mutationPlan.mode,
-      timeout,
-      concurrency,
-      query,
-    },
-    context,
-    notes: mutationPlan.notes,
-    summary: summarizeProbeResults(sorted),
-    probes: sorted,
-  };
 }
 
 // ========== EPISODE ACTIONS ==========
@@ -1713,6 +1157,15 @@ async function markWatched(episodeId) {
   if (!id) throw new Error("INVALID_EPISODE_ID");
 
   return runMutationCandidates([
+    {
+      path: `/watched_episodes/episode/${id}?is_rewatch=0`,
+      methods: ["POST"],
+    },
+    {
+      path: `/watched_episodes/episode/${id}`,
+      methods: ["POST"],
+      bodies: [undefined, { is_rewatch: 0 }, { is_rewatch: false }],
+    },
     {
       path: `/episodes/${id}/watched`,
       methods: ["PUT", "POST"],
@@ -1742,6 +1195,7 @@ async function markUnwatched(episodeId) {
   if (!id) throw new Error("INVALID_EPISODE_ID");
 
   return runMutationCandidates([
+    { path: `/watched_episodes/episode/${id}`, methods: ["DELETE"] },
     { path: `/episodes/${id}/watched`, methods: ["DELETE"] },
     { path: `/episode/${id}/watched`, methods: ["DELETE"] },
     { path: `/episodes/${id}/seen`, methods: ["DELETE", "POST", "PUT"], bodies: [undefined, { seen: false }, { is_watched: false }] },
@@ -1751,9 +1205,38 @@ async function markUnwatched(episodeId) {
 
 // ========== SEARCH ==========
 async function searchShows(query) {
+  const a = await getAuth();
+  if (!a) throw new Error("NOT_LOGGED_IN");
+
   const q = encodeURIComponent(query);
 
-  // 1) msearch
+  // 1) TV Time search microservice (global shows/movies search)
+  try {
+    const authHeaders = authHeadersForRequest(a);
+    if (authHeaders.length) {
+      for (const authorization of authHeaders) {
+        const urls = [
+          `${SEARCH_API}/series,movie?q=${q}&offset=0&limit=20`,
+          `${SEARCH_API}/series?q=${q}&offset=0&limit=20`,
+        ];
+        for (const url of urls) {
+          const r = await fetchT(url, {
+            headers: {
+              Authorization: authorization,
+              "x-api-key": SEARCH_API_KEY,
+            },
+          }, 10000);
+          if (!r.ok) continue;
+          const d = await r.json();
+          if (d?.status === "fail" || d?.status === "error") continue;
+          const arr = pickSearchResults(d);
+          if (arr.length > 0) return { results: arr, remote: "search-service" };
+        }
+      }
+    }
+  } catch {}
+
+  // 2) msearch
   try {
     const urls = [
       `https://msearch.tvtime.com/v1/search?q=${q}&limit=20`,
@@ -1768,7 +1251,7 @@ async function searchShows(query) {
     }
   } catch {}
 
-  // 2) API search endpoints
+  // 3) Legacy API search endpoints
   for (const ep of [
     `/show/search?q=${q}`,
     `/search?q=${q}`,
@@ -1786,7 +1269,7 @@ async function searchShows(query) {
     }
   }
 
-  // 3) Local search fallback against tracked shows
+  // 4) Local search fallback against tracked shows
   try {
     const showsResult = await getWatchingShows();
     if (showsResult.shows?.length > 0) {
@@ -1801,11 +1284,21 @@ async function searchShows(query) {
 
 // ========== FOLLOW ==========
 async function followShow(id) {
+  const a = await getAuth();
+  if (!a) throw new Error("NOT_LOGGED_IN");
+
   const rawSid = String(id || "").trim();
   const sid = encodeURIComponent(rawSid);
   if (!sid) throw new Error("INVALID_SHOW_ID");
 
   return runMutationCandidates([
+    { path: `/user/${a.uid}/followed_show?show_id=${sid}`, methods: ["PUT"] },
+    {
+      path: `/user/${a.uid}/followed_show`,
+      methods: ["PUT"],
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `show_id=${sid}`,
+    },
     { path: `/show/${sid}/follow`, methods: ["PUT", "POST"] },
     { path: `/series/${sid}/follow`, methods: ["PUT", "POST"] },
     { path: `/show/${sid}/following`, methods: ["PUT", "POST"], bodies: [undefined, { following: true }, { is_following: true }] },
@@ -1814,11 +1307,21 @@ async function followShow(id) {
 }
 
 async function unfollowShow(id) {
+  const a = await getAuth();
+  if (!a) throw new Error("NOT_LOGGED_IN");
+
   const rawSid = String(id || "").trim();
   const sid = encodeURIComponent(rawSid);
   if (!sid) throw new Error("INVALID_SHOW_ID");
 
   return runMutationCandidates([
+    { path: `/user/${a.uid}/followed_show?show_id=${sid}`, methods: ["DELETE"] },
+    {
+      path: `/user/${a.uid}/followed_show`,
+      methods: ["DELETE"],
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `show_id=${sid}`,
+    },
     { path: `/show/${sid}/follow`, methods: ["DELETE"] },
     { path: `/series/${sid}/follow`, methods: ["DELETE"] },
     { path: `/show/${sid}/following`, methods: ["DELETE", "POST", "PUT"], bodies: [undefined, { following: false }, { is_following: false }] },
@@ -1840,8 +1343,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case "getShowDetails": return await getShowDetails(request.showId);
         case "getShowSeasons": return await getShowSeasons(request.showId);
         case "getSeasonEpisodes": return await getSeasonEpisodes(request.showId, request.seasonNumber);
-        case "inspectApi": return await inspectApiSurface();
-        case "runApiLab": return await runApiLab(request.options || {});
         case "markWatched": return await markWatched(request.episodeId);
         case "markUnwatched": return await markUnwatched(request.episodeId);
         case "searchShows": return await searchShows(request.query);

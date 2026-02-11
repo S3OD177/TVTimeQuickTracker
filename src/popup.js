@@ -8,8 +8,6 @@ const $$ = s => document.querySelectorAll(s);
 let currentTab = "up-next";
 let showsCache = null;
 let upNextCache = null;
-let apiLabReport = null;
-let apiLabBusy = false;
 let searchTimeout = null;
 let detailRequestId = 0;
 const seasonEpisodesCache = new Map();
@@ -27,11 +25,6 @@ function setupEvents() {
   $("#logout-btn").addEventListener("click", handleLogout);
   $("#search-input").addEventListener("input", handleSearchInput);
   $("#detail-back").addEventListener("click", closeShowDetail);
-  $("#api-lab-run")?.addEventListener("click", runApiLab);
-  $("#api-lab-copy")?.addEventListener("click", copyApiLabJson);
-  $("#api-lab-save")?.addEventListener("click", saveApiLabJson);
-  $("#api-lab-include-mutations")?.addEventListener("change", syncApiLabMutationControls);
-  syncApiLabMutationControls();
 }
 
 function closeShowDetail() {
@@ -87,7 +80,6 @@ async function handleLogout() {
   await msg({ action: "logout" });
   showsCache = null;
   upNextCache = null;
-  apiLabReport = null;
   seasonEpisodesCache.clear();
   closeShowDetail();
   showScreen("login-screen");
@@ -109,9 +101,6 @@ function switchTab(id) {
   if (id === "up-next" && !upNextCache) loadUpNext();
   if (id === "my-shows" && !showsCache) loadMyShows();
   if (id === "search") $("#search-input").focus();
-  if (id === "api-lab") {
-    renderApiLabState();
-  }
 }
 
 async function refreshCurrentTab() {
@@ -124,8 +113,6 @@ async function refreshCurrentTab() {
   } else if (currentTab === "my-shows") {
     showsCache = null;
     await loadMyShows();
-  } else if (currentTab === "api-lab") {
-    await runApiLab();
   }
 }
 
@@ -199,10 +186,6 @@ async function loadMyShows() {
 function handleSearchInput(e) {
   const q = e.target.value.trim();
   clearTimeout(searchTimeout);
-  if (q.toLowerCase() === "/inspect") {
-    runApiInspector();
-    return;
-  }
   if (q.length < 2) {
     $("#search-results").innerHTML = stateHTML("empty", "Search for a TV show");
     return;
@@ -246,305 +229,6 @@ function handleSearchInput(e) {
       $("#search-results").innerHTML = stateHTML("error", "Search failed");
     }
   }, 400);
-}
-
-// ========== API LAB ==========
-function syncApiLabMutationControls() {
-  const include = $("#api-lab-include-mutations");
-  const live = $("#api-lab-live-mutations");
-  if (!include || !live) return;
-  live.disabled = !include.checked;
-  if (!include.checked) live.checked = false;
-}
-
-function renderApiLabState() {
-  const container = $("#api-lab-results");
-  const copyBtn = $("#api-lab-copy");
-  const saveBtn = $("#api-lab-save");
-  if (!container) return;
-
-  if (!apiLabReport) {
-    container.innerHTML = `
-      <div class="api-lab-head">
-        <div class="api-lab-title">Powerful API Lab</div>
-        <div class="api-lab-sub">Runs a full endpoint audit with status codes, latency, payload shape, and mutation route checks.</div>
-      </div>
-      <div class="api-lab-note">Safe mode is enabled by default for mutation checks and uses placeholder IDs to avoid changing your account data.</div>
-      <div class="state-msg empty" style="padding:32px 0 14px;">
-        <div class="state-icon">🧪</div>
-        <div class="state-title">No audit report yet</div>
-        <div class="state-sub">Click "Run Full API Audit" to start.</div>
-      </div>
-    `;
-    if (copyBtn) copyBtn.disabled = true;
-    if (saveBtn) saveBtn.disabled = true;
-    return;
-  }
-
-  renderApiLabReport(apiLabReport);
-}
-
-async function runApiLab() {
-  if (apiLabBusy) return;
-  const container = $("#api-lab-results");
-  const runBtn = $("#api-lab-run");
-  const copyBtn = $("#api-lab-copy");
-  const saveBtn = $("#api-lab-save");
-  if (!container || !runBtn) return;
-
-  const includeMutationRoutes = $("#api-lab-include-mutations")?.checked !== false;
-  const wantsLiveMutations = $("#api-lab-live-mutations")?.checked === true;
-  if (wantsLiveMutations) {
-    const confirmed = window.confirm("Live mutation checks can change watched/follow state. Continue?");
-    if (!confirmed) {
-      $("#api-lab-live-mutations").checked = false;
-      return;
-    }
-  }
-
-  apiLabBusy = true;
-  runBtn.disabled = true;
-  runBtn.textContent = "Running...";
-  if (copyBtn) copyBtn.disabled = true;
-  if (saveBtn) saveBtn.disabled = true;
-  container.innerHTML = stateHTML("loading", "Running full API audit...");
-
-  try {
-    const report = await msg({
-      action: "runApiLab",
-      options: {
-        includeMutationRoutes,
-        mutationMode: wantsLiveMutations ? "live" : "safe",
-        query: "game",
-        timeout: 12000,
-        concurrency: 4,
-      },
-    });
-    if (report?.error) throw new Error(report.error);
-
-    apiLabReport = report;
-    renderApiLabReport(report);
-    if (copyBtn) copyBtn.disabled = false;
-    if (saveBtn) saveBtn.disabled = false;
-    showToast("API audit completed");
-  } catch (e) {
-    container.innerHTML = stateHTML("error", "API audit failed", esc(e.message || "Unknown error"));
-    showToast(e?.message || "Audit failed", "error");
-  } finally {
-    apiLabBusy = false;
-    runBtn.disabled = false;
-    runBtn.textContent = "Run Full API Audit";
-  }
-}
-
-function renderApiLabReport(report) {
-  const container = $("#api-lab-results");
-  if (!container) return;
-
-  const summary = report.summary || {};
-  const probes = Array.isArray(report.probes) ? report.probes : [];
-  const generated = report.generatedAt ? fmtDateTime(report.generatedAt) : "";
-  const context = report.context || {};
-  const options = report.options || {};
-  const notes = Array.isArray(report.notes) ? report.notes : [];
-
-  const headHtml = `
-    <div class="api-lab-head">
-      <div class="api-lab-title">Audit Report ${generated ? `- ${esc(generated)}` : ""}</div>
-      <div class="api-lab-sub">
-        User ${esc(String(report.userId || ""))}
-        ${context.sampleShowId ? ` | sample show ${esc(String(context.sampleShowId))}` : ""}
-        ${context.sampleEpisodeId ? ` | sample episode ${esc(String(context.sampleEpisodeId))}` : ""}
-      </div>
-      <div class="api-lab-sub">
-        mutation mode: ${esc(String(options.mutationMode || "safe"))}
-        | timeout: ${esc(String(options.timeout || ""))}ms
-        | concurrency: ${esc(String(options.concurrency || ""))}
-      </div>
-    </div>
-  `;
-
-  const summaryHtml = `
-    <div class="api-lab-summary">
-      <div class="api-lab-stat">
-        <div class="api-lab-stat-label">Total Probes</div>
-        <div class="api-lab-stat-value">${Number(summary.total || 0)}</div>
-      </div>
-      <div class="api-lab-stat">
-        <div class="api-lab-stat-label">Healthy</div>
-        <div class="api-lab-stat-value">${Number(summary.ok || 0) + Number(summary.reachable || 0)}</div>
-      </div>
-      <div class="api-lab-stat">
-        <div class="api-lab-stat-label">Errors</div>
-        <div class="api-lab-stat-value">${Number(summary.error || 0)}</div>
-      </div>
-      <div class="api-lab-stat">
-        <div class="api-lab-stat-label">Avg Latency</div>
-        <div class="api-lab-stat-value">${Number(summary.avgLatencyMs || 0)}ms</div>
-      </div>
-    </div>
-  `;
-
-  const notesHtml = notes.length
-    ? notes.map(note => `<div class="api-lab-note">${esc(note)}</div>`).join("")
-    : "";
-
-  const rowsHtml = probes.length
-    ? `<div class="api-lab-list">${probes.map(apiLabProbeHTML).join("")}</div>`
-    : '<div class="state-msg empty" style="padding:20px 0 8px;"><div class="state-title">No probes in report</div></div>';
-
-  container.innerHTML = `${headHtml}${summaryHtml}${notesHtml}${rowsHtml}`;
-}
-
-function apiLabProbeHTML(probe) {
-  const status = Number(probe.status || 0);
-  const duration = Number(probe.durationMs || 0);
-  const outcome = String(probe.outcome || "error");
-  const pill = apiLabOutcomePill(outcome);
-  const endpoint = esc(probe.endpoint || "");
-  const method = esc(String(probe.method || "GET").toUpperCase());
-  const group = esc(String(probe.group || "misc"));
-  const mode = esc(String(probe.mode || "read"));
-  const meta = [
-    `group:${group}`,
-    `mode:${mode}`,
-    status ? `status:${status}` : "status:n/a",
-    `latency:${duration}ms`,
-  ].join(" | ");
-
-  let details = "";
-  if (probe.error) {
-    details += `<div class="api-lab-meta">error: ${esc(probe.error)}</div>`;
-  }
-  if (probe.topKeys?.length) {
-    details += `<div class="api-lab-meta">top keys: ${esc(probe.topKeys.slice(0, 10).join(", "))}</div>`;
-  }
-  if (probe.counts && typeof probe.counts === "object") {
-    details += `<div class="api-lab-meta">shows:${Number(probe.counts.shows || 0)} episodes:${Number(probe.counts.episodes || 0)} seasons:${Number(probe.counts.seasons || 0)}</div>`;
-  }
-
-  return `
-    <div class="api-lab-row">
-      <div class="api-lab-row-top">
-        <span class="api-lab-method">${method}</span>
-        ${pill}
-      </div>
-      <div class="api-lab-endpoint">${endpoint}</div>
-      <div class="api-lab-meta">${meta}</div>
-      ${details}
-    </div>
-  `;
-}
-
-function apiLabOutcomePill(outcome) {
-  if (outcome === "ok") return '<span class="api-lab-pill ok">OK</span>';
-  if (outcome === "reachable") return '<span class="api-lab-pill reachable">REACHABLE</span>';
-  if (outcome === "skipped") return '<span class="api-lab-pill skipped">SKIPPED</span>';
-  return '<span class="api-lab-pill error">ERROR</span>';
-}
-
-async function copyApiLabJson() {
-  if (!apiLabReport) return;
-  const text = JSON.stringify(apiLabReport, null, 2);
-
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error("Clipboard not available");
-    await navigator.clipboard.writeText(text);
-    showToast("Audit JSON copied");
-    return;
-  } catch {}
-
-  try {
-    const area = document.createElement("textarea");
-    area.value = text;
-    area.style.position = "fixed";
-    area.style.opacity = "0";
-    document.body.appendChild(area);
-    area.focus();
-    area.select();
-    const ok = document.execCommand("copy");
-    area.remove();
-    if (!ok) throw new Error("Copy failed");
-    showToast("Audit JSON copied");
-  } catch {
-    showToast("Could not copy JSON", "error");
-  }
-}
-
-function saveApiLabJson() {
-  if (!apiLabReport) return;
-  try {
-    const text = JSON.stringify(apiLabReport, null, 2);
-    const blob = new Blob([text], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `tvtime-api-audit-${stamp}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1200);
-    showToast("Audit JSON saved");
-  } catch {
-    showToast("Could not save JSON", "error");
-  }
-}
-
-async function runApiInspector() {
-  const container = $("#search-results");
-  container.innerHTML = stateHTML("loading", "Inspecting API...");
-  try {
-    const report = await msg({ action: "inspectApi" });
-    if (report.error) throw new Error(report.error);
-    container.innerHTML = inspectReportHTML(report);
-  } catch (e) {
-    container.innerHTML = stateHTML("error", "Inspector failed", esc(e.message || "Unknown error"));
-  }
-}
-
-function inspectReportHTML(report) {
-  const probes = Array.isArray(report.probes) ? report.probes : [];
-  const generated = report.generatedAt ? fmtDateTime(report.generatedAt) : "";
-  const rows = probes.map(probe => {
-    if (!probe.ok) {
-      return `
-        <div class="inspect-row err">
-          <div class="inspect-status err">ERR</div>
-          <div class="inspect-endpoint">${esc(probe.endpoint || "")}</div>
-          <div class="inspect-meta">${esc(probe.error || "Unknown error")}</div>
-        </div>
-      `;
-    }
-
-    const counts = probe.counts || {};
-    const showKeys = (probe.sampleKeys?.show || []).join(", ");
-    const episodeKeys = (probe.sampleKeys?.episode || []).join(", ");
-    const seasonKeys = (probe.sampleKeys?.season || []).join(", ");
-    const topKeys = (probe.topKeys || []).join(", ");
-
-    return `
-      <div class="inspect-row ok">
-        <div class="inspect-status ok">OK</div>
-        <div class="inspect-endpoint">${esc(probe.endpoint || "")}</div>
-        <div class="inspect-meta">shows:${counts.shows || 0} episodes:${counts.episodes || 0} seasons:${counts.seasons || 0}</div>
-        ${topKeys ? `<div class="inspect-keys">top: ${esc(topKeys)}</div>` : ""}
-        ${showKeys ? `<div class="inspect-keys">show keys: ${esc(showKeys)}</div>` : ""}
-        ${episodeKeys ? `<div class="inspect-keys">episode keys: ${esc(episodeKeys)}</div>` : ""}
-        ${seasonKeys ? `<div class="inspect-keys">season keys: ${esc(seasonKeys)}</div>` : ""}
-      </div>
-    `;
-  }).join("");
-
-  return `
-    <div class="inspect-report">
-      <div class="inspect-head">
-        <div>API Inspector ${generated ? `- ${esc(generated)}` : ""}</div>
-        <div>User: ${esc(String(report.userId || ""))}${report.sampleShowId ? ` | sample show: ${esc(String(report.sampleShowId))}` : ""}</div>
-      </div>
-      ${rows || '<div class="inspect-row err"><div class="inspect-status err">ERR</div><div class="inspect-meta">No probe results.</div></div>'}
-    </div>
-  `;
 }
 
 async function handleFollow(btn, showId) {
@@ -848,7 +532,8 @@ function updateSeasonBadge(section, watchedCount = null, totalCount = null) {
 function purl(p) {
   if (!p) return "";
   const raw = mediaFromValue(p);
-  return safeMediaUrl(raw);
+  const url = safeMediaUrl(raw);
+  return isPlaceholderMediaUrl(url) ? "" : url;
 }
 
 function mediaFromValue(value, depth = 0) {
@@ -878,6 +563,11 @@ function mediaFromValue(value, depth = 0) {
     if (out) return out;
   }
 
+  for (const nested of Object.values(value)) {
+    const out = mediaFromValue(nested, depth + 1);
+    if (out) return out;
+  }
+
   return "";
 }
 
@@ -890,13 +580,10 @@ function extractEpisodes(data) {
     number: ep.number || ep.episode_number || 0,
     seasonNumber: ep.season_number || ep.season?.number || ep.season || 0,
     showName: ep.show_name || ep.show?.name || ep.show?.title || "",
-    showId: ep.show_id || ep.show?.id || "",
+    showId: ep.show_id || ep.series_id || ep.show?.id || ep.show?.series_id || "",
     poster: purl(
       ep.poster ||
       ep.show_poster ||
-      ep.image ||
-      ep.cover ||
-      ep.all_images ||
       ep.show?.poster ||
       ep.show?.image ||
       ep.show?.cover ||
@@ -904,10 +591,21 @@ function extractEpisodes(data) {
       ep.images?.poster ||
       ep.images?.cover ||
       ep.all_images?.poster ||
-      ep.all_images?.cover
+      ep.all_images?.cover ||
+      ep.image ||
+      ep.cover ||
+      ep.all_images
     ),
     airDate: ep.air_date || ep.aired || "",
-    watched: ep.watched || ep.is_watched || false,
+    watched: Boolean(
+      ep.watched ||
+      ep.is_watched ||
+      ep.is_seen ||
+      ep.seen === true ||
+      ep.seen === 1 ||
+      ep.seen === "1" ||
+      ep.seen_date
+    ),
   }));
 }
 
@@ -915,21 +613,47 @@ function extractShows(data) {
   if (!data) return [];
   const list = data.shows || data.series || (Array.isArray(data) ? data : []);
   return (Array.isArray(list) ? list : []).map(s => ({
-    id: s.id || s.series_id,
+    id: s.id || s.series_id || s.show_id,
     name: s.name || s.title || "",
-    poster: purl(s.poster || s.image),
+    poster: purl(
+      s.poster ||
+      s.image ||
+      s.cover ||
+      s.all_images?.poster ||
+      s.all_images?.cover ||
+      s.all_images
+    ),
     following: s.following || s.is_following || s.is_followed || true,
   }));
 }
 
 function extractSearchResults(data) {
   if (!data) return [];
-  const list = data.results || data.series || data.shows || (Array.isArray(data) ? data : []);
+  const list =
+    data.results ||
+    data.series ||
+    data.shows ||
+    data.data ||
+    data.items ||
+    data.matches ||
+    (Array.isArray(data) ? data : []);
   return (Array.isArray(list) ? list : []).map(s => ({
-    id: s.id || s.series_id,
+    id: s.id || s.series_id || s.show_id,
     name: s.name || s.title || "",
-    poster: purl(s.poster || s.image),
-    year: s.year || s.first_air_date?.substring(0, 4) || "",
+    poster: purl(
+      s.poster ||
+      s.image ||
+      s.cover ||
+      s.all_images?.poster ||
+      s.all_images?.cover ||
+      s.all_images
+    ),
+    year:
+      s.year ||
+      s.release_year ||
+      s.first_air_date?.substring?.(0, 4) ||
+      s.release_date?.substring?.(0, 4) ||
+      "",
     following: s.following || s.is_following || s.is_followed || false,
   }));
 }
@@ -1055,6 +779,21 @@ function safeMediaUrl(raw) {
   }
 }
 
+function isPlaceholderMediaUrl(url) {
+  const s = String(url || "").toLowerCase();
+  if (!s) return true;
+  return (
+    s.startsWith("data:image/") ||
+    s.includes("/default-images/") ||
+    s.includes("placeholder") ||
+    s.includes("landscape-default") ||
+    s.includes("noimage") ||
+    s.includes("no-image") ||
+    s.includes("missing") ||
+    s.includes("notfound")
+  );
+}
+
 function bindImageFallbacks(root) {
   if (!root) return;
   root.querySelectorAll("img[data-fallback]").forEach(img => {
@@ -1104,15 +843,6 @@ function fmtDate(s) {
   if (!s) return "";
   try {
     return new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  } catch {
-    return s;
-  }
-}
-
-function fmtDateTime(s) {
-  if (!s) return "";
-  try {
-    return new Date(s).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   } catch {
     return s;
   }

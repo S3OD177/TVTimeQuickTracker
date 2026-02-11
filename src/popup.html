@@ -59,10 +59,6 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         Search
       </button>
-      <button class="tab" data-tab="api-lab">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 3 7l9 5 9-5-9-5z"/><path d="m3 17 9 5 9-5"/><path d="m3 12 9 5 9-5"/></svg>
-        API Lab
-      </button>
     </nav>
 
     <div class="tab-content">
@@ -78,24 +74,6 @@
           <input type="text" id="search-input" placeholder="Search TV shows...">
         </div>
         <div id="search-results"></div>
-      </div>
-      <div id="tab-api-lab" class="tab-pane">
-        <div class="api-lab-controls">
-          <button id="api-lab-run" class="api-lab-run-btn">Run Full API Audit</button>
-          <label class="api-lab-check">
-            <input type="checkbox" id="api-lab-include-mutations" checked>
-            Include mutation route checks
-          </label>
-          <label class="api-lab-check">
-            <input type="checkbox" id="api-lab-live-mutations">
-            Use live IDs for mutation checks (can change account data)
-          </label>
-          <div class="api-lab-actions">
-            <button id="api-lab-copy" class="api-lab-action-btn" disabled>Copy JSON</button>
-            <button id="api-lab-save" class="api-lab-action-btn" disabled>Save JSON</button>
-          </div>
-        </div>
-        <div id="api-lab-results"></div>
       </div>
     </div>
   </div>
