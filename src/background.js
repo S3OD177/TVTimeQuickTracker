@@ -11,9 +11,78 @@ const UPNEXT_ENRICH_CONCURRENCY = 4;
 const UPNEXT_NAME_ENRICH_LIMIT = 25;
 const UPNEXT_NAME_ENRICH_CONCURRENCY = 3;
 const EPISODE_DETAILS_CONCURRENCY = 6;
+const WATCHLIST_FILTERS = new Set([
+  "continue_watching",
+  "not_watched_for_a_while",
+  "not_started_yet",
+  "for_later",
+]);
 const showDetailsCache = new Map();
 const showNamePosterCache = new Map();
 const seasonProbePosterCache = new Map();
+const responseCache = new Map();
+const inflightResponseCache = new Map();
+const WATCHLIST_CACHE_TTL_MS = 45 * 1000;
+const UPCOMING_CACHE_TTL_MS = 45 * 1000;
+const WATCHING_SHOWS_CACHE_TTL_MS = 90 * 1000;
+const DEBUG_LOGS = false;
+
+function logDebug(...args) {
+  if (DEBUG_LOGS) {
+    console.log(...args);
+  }
+}
+
+function clonePayload(value) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function getCachedResponse(key, ttlMs) {
+  const entry = responseCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > ttlMs) {
+    responseCache.delete(key);
+    return null;
+  }
+  return clonePayload(entry.value);
+}
+
+function setCachedResponse(key, payload) {
+  responseCache.set(key, { ts: Date.now(), value: clonePayload(payload) });
+}
+
+function clearResponseCaches() {
+  responseCache.clear();
+  inflightResponseCache.clear();
+}
+
+async function withCachedResponse({ key, ttlMs, force }, fetcher) {
+  if (!force) {
+    const cached = getCachedResponse(key, ttlMs);
+    if (cached && !cached.error) return { ...cached, cached: true };
+  }
+
+  if (inflightResponseCache.has(key)) {
+    return inflightResponseCache.get(key);
+  }
+
+  const pending = (async () => {
+    const fresh = await fetcher();
+    if (fresh && typeof fresh === "object" && !fresh.error) {
+      setCachedResponse(key, fresh);
+    }
+    return fresh;
+  })().finally(() => {
+    inflightResponseCache.delete(key);
+  });
+
+  inflightResponseCache.set(key, pending);
+  return pending;
+}
 
 function fetchT(url, opts = {}, ms = 15000) {
   return Promise.race([
@@ -27,7 +96,7 @@ function basicH(u, p) {
 }
 
 function authStore() {
-  return chrome.storage.session || chrome.storage.local;
+  return chrome.storage.local;
 }
 
 function hasSessionStore() {
@@ -35,38 +104,39 @@ function hasSessionStore() {
 }
 
 async function clearAuthStorage() {
+  const tasks = [chrome.storage.local.remove(LEGACY_AUTH_KEYS)];
   if (hasSessionStore()) {
-    await Promise.all([
-      chrome.storage.session.remove(AUTH_KEYS),
-      chrome.storage.local.remove(LEGACY_AUTH_KEYS),
-    ]);
-    return;
+    tasks.push(chrome.storage.session.remove(AUTH_KEYS));
   }
-  await chrome.storage.local.remove(LEGACY_AUTH_KEYS);
+  await Promise.all(tasks);
 }
 
 async function getAuth() {
-  const store = authStore();
-  const session = await store.get(AUTH_KEYS);
-  if (session.uid && (session.bearer || session.auth)) {
+  const local = await chrome.storage.local.get(AUTH_KEYS);
+  if (local.uid && (local.bearer || local.auth)) {
+    const safeAuth = local.bearer ? "" : (local.auth || "");
+    if (local.bearer && local.auth) {
+      await chrome.storage.local.set({ auth: "" });
+    }
     return {
-      uid: session.uid,
-      bearer: session.bearer || "",
-      auth: session.auth || "",
+      uid: local.uid,
+      bearer: local.bearer || "",
+      auth: safeAuth,
     };
   }
 
   if (hasSessionStore()) {
-    // One-time migration from persistent local storage.
-    const legacy = await chrome.storage.local.get(AUTH_KEYS);
-    if (legacy.uid && (legacy.bearer || legacy.auth)) {
+    // One-time migration from session storage to persistent storage.
+    const session = await chrome.storage.session.get(AUTH_KEYS);
+    if (session.uid && (session.bearer || session.auth)) {
+      const safeAuth = session.bearer ? "" : (session.auth || "");
       const migrated = {
-        uid: legacy.uid,
-        bearer: legacy.bearer || "",
-        auth: legacy.auth || "",
+        uid: session.uid,
+        bearer: session.bearer || "",
+        auth: safeAuth,
       };
-      await store.set(migrated);
-      await chrome.storage.local.remove(LEGACY_AUTH_KEYS);
+      await chrome.storage.local.set(migrated);
+      await chrome.storage.session.remove(AUTH_KEYS);
       return migrated;
     }
   }
@@ -94,7 +164,7 @@ async function req(path, opts = {}) {
   } = opts;
 
   const url = path.startsWith("http") ? path : `${API}${path}`;
-  console.log(`[TV] ${method} ${url.substring(0, 120)}`);
+  logDebug(`[TV] ${method} ${url.substring(0, 120)}`);
 
   const authHeaders = [];
   if (forceBasic && a.auth) {
@@ -116,7 +186,7 @@ async function req(path, opts = {}) {
       },
     }, timeout);
     const txt = await r.text();
-    console.log(`[TV] ${r.status} ${txt.substring(0, 250)}`);
+    logDebug(`[TV] ${method} ${url.substring(0, 120)} -> ${r.status}`);
 
     if ((r.status === 401 || r.status === 403) && i < authHeaders.length - 1) {
       continue;
@@ -211,7 +281,7 @@ async function reqMutation(path, opts = {}) {
       }, timeout);
       const txt = await r.text();
       const payload = parseJSON(txt);
-      console.log(`[TV] ${method} ${url.substring(0, 120)} -> ${r.status} ${txt.substring(0, 250)}`);
+      logDebug(`[TV] ${method} ${url.substring(0, 120)} -> ${r.status}`);
 
       if ((r.status === 401 || r.status === 403) && i < authHeaders.length - 1) {
         continue;
@@ -898,17 +968,19 @@ async function login(username, password) {
     headers: { Authorization: h },
   }, 15000);
   const d = await r.json();
-  console.log("[TV] Login:", JSON.stringify(d).substring(0, 200));
+  logDebug("[TV] Login response received");
   if (d.result === "KO") throw new Error(d.message || "Login failed");
   if (!d.id) throw new Error("No user ID");
 
+  clearResponseCaches();
+  const bearer = d.tvst_access_token || d.access_token || "";
   await authStore().set({
-    auth: h,
+    auth: bearer ? "" : h,
     uid: d.id,
-    bearer: d.tvst_access_token || d.access_token || "",
+    bearer,
   });
   if (hasSessionStore()) {
-    await chrome.storage.local.remove(LEGACY_AUTH_KEYS);
+    await chrome.storage.session.remove(AUTH_KEYS);
   }
 
   return { success: true, userId: d.id };
@@ -921,87 +993,273 @@ async function checkAuth() {
 
 async function logout() {
   await clearAuthStorage();
+  clearResponseCaches();
   return { success: true };
 }
 
 // ========== MY SHOWS ==========
-async function getWatchingShows() {
+async function getWatchingShows(opts = {}) {
   const a = await getAuth();
   if (!a) throw new Error("NOT_LOGGED_IN");
 
-  const endpoints = [
-    `/user/${a.uid}?fields=shows.fields(id,series_id,name,title,poster,image,is_following,is_followed).limit(-1)`,
-    `/user/${a.uid}?fields=shows.limit(-1)`,
-    `/user/${a.uid}`,
-  ];
+  const force = Boolean(opts.forceRefresh || opts.noCache);
+  const cacheKey = `watching-shows:${a.uid}`;
+  return withCachedResponse({ key: cacheKey, ttlMs: WATCHING_SHOWS_CACHE_TTL_MS, force }, async () => {
+    const endpoints = [
+      `/user/${a.uid}?fields=shows.fields(id,series_id,name,title,poster,image,is_following,is_followed).limit(-1)`,
+      `/user/${a.uid}?fields=shows.limit(-1)`,
+      `/user/${a.uid}`,
+    ];
 
-  for (const ep of endpoints) {
-    try {
-      const d = await req(ep);
-      const shows = d.shows || d.series || (Array.isArray(d) ? d : null);
-      if (shows?.length > 0) {
-        const enriched = await enrichShows(shows);
-        console.log(`[TV] ✓ ${enriched.length} shows`);
-        return { shows: enriched };
+    for (const ep of endpoints) {
+      try {
+        const d = await req(ep);
+        const shows = d.shows || d.series || (Array.isArray(d) ? d : null);
+        if (shows?.length > 0) {
+          const enriched = await enrichShows(shows);
+          logDebug(`[TV] watching shows loaded: ${enriched.length}`);
+          return { shows: enriched };
+        }
+      } catch (e) {
+        if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
       }
-    } catch (e) {
-      if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
     }
-  }
-  return { shows: [] };
+    return { shows: [] };
+  });
 }
 
-// ========== UP NEXT ==========
-async function getUpNext() {
+function normalizeWatchListFilter(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  const normalized = raw
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[-\s]+/g, "_")
+    .toLowerCase();
+  if (WATCHLIST_FILTERS.has(normalized)) return normalized;
+  if (normalized === "continuewatching") return "continue_watching";
+  if (normalized === "notwatchedforawhile") return "not_watched_for_a_while";
+  if (normalized === "notstartedyet") return "not_started_yet";
+  if (normalized === "forlater") return "for_later";
+  return "";
+}
+
+function withWatchListCategory(episodes, filter) {
+  const normalizedFilter = normalizeWatchListFilter(filter);
+  return (Array.isArray(episodes) ? episodes : []).map(ep => ({
+    ...ep,
+    ...(normalizedFilter &&
+    !normalizeWatchListFilter(ep?.to_watch_category || ep?.toWatchCategory)
+      ? { to_watch_category: normalizedFilter }
+      : {}),
+  }));
+}
+
+function collectEpisodeLikeArrays(payload, out = [], depth = 0) {
+  if (!payload || depth > 5) return out;
+  if (Array.isArray(payload)) {
+    if (payload.length && looksLikeEpisode(payload[0])) {
+      out.push(payload);
+    } else {
+      for (const item of payload) {
+        collectEpisodeLikeArrays(item, out, depth + 1);
+      }
+    }
+    return out;
+  }
+  if (typeof payload !== "object") return out;
+  for (const value of Object.values(payload)) {
+    collectEpisodeLikeArrays(value, out, depth + 1);
+  }
+  return out;
+}
+
+function normalizeUpcomingEpisode(ep) {
+  const base = normalizeUpNextEpisode(ep);
+  return {
+    ...base,
+    channel:
+      ep?.channel ||
+      ep?.channel_name ||
+      ep?.broadcast_channel ||
+      ep?.network ||
+      ep?.show?.network ||
+      ep?.show?.channel ||
+      "",
+    air_time:
+      ep?.air_time ||
+      ep?.time ||
+      ep?.local_time ||
+      ep?.airing_time ||
+      "",
+    air_datetime:
+      ep?.air_datetime ||
+      ep?.airing_at ||
+      ep?.air_at ||
+      ep?.air_date ||
+      ep?.aired ||
+      "",
+  };
+}
+
+function normalizeUpcomingEpisodeList(payload) {
+  const rows = [];
+  const direct = normalizeEpisodeList(payload);
+  if (direct.length) rows.push(...direct);
+  for (const arr of collectEpisodeLikeArrays(payload)) {
+    rows.push(...arr);
+  }
+  if (!rows.length) return [];
+
+  const seen = new Set();
+  const out = [];
+  for (const ep of rows) {
+    const key =
+      ep?.id ||
+      ep?.episode_id ||
+      `${pickShowIdFromEpisode(ep)}:${ep?.season_number || ep?.season || ""}:${ep?.episode_number || ep?.number || ""}:${ep?.air_date || ep?.aired || ep?.air_datetime || ""}`;
+    const token = String(key || "").trim();
+    if (!token || seen.has(token)) continue;
+    seen.add(token);
+    out.push(normalizeUpcomingEpisode(ep));
+  }
+  return out;
+}
+
+async function getWatchList(opts = {}) {
   const a = await getAuth();
   if (!a) throw new Error("NOT_LOGGED_IN");
 
-  const endpoints = [
-    `/user/${a.uid}/to_watch?offset=0&limit=100&include_country=1`,
-    `/user/${a.uid}/to_watch?page=1&limit=100&include_country=1`,
-    `/user/${a.uid}/to_watch`,
-    `/user/${a.uid}?fields=to_watch.limit(-1)`,
-    "/to_watch",
-    `/user/${a.uid}/up_next`,
-    `/user/${a.uid}?fields=up_next.limit(-1)`,
-    "/up_next",
-    `/user/${a.uid}?fields=next_episodes.limit(-1)`,
-  ];
+  const offset = Math.max(0, Number(opts.offset) || 0);
+  const limit = Math.max(1, Math.min(200, parsePositiveInt(opts.limit, 100)));
+  const filter = normalizeWatchListFilter(opts.filter);
+  const force = Boolean(opts.forceRefresh || opts.noCache);
+  const cacheKey = `watch-list:${a.uid}:${filter || "all"}:${offset}:${limit}`;
+  return withCachedResponse({ key: cacheKey, ttlMs: WATCHLIST_CACHE_TTL_MS, force }, async () => {
+    const filterQ = filter ? `&filter=${encodeURIComponent(filter)}` : "";
+    const endpoints = [
+      `/user/${a.uid}/to_watch?offset=${offset}&limit=${limit}${filterQ}&include_country=1`,
+      `/user/${a.uid}/to_watch?page=1&limit=${limit}${filterQ}&include_country=1`,
+      `/user/${a.uid}/to_watch?limit=${limit}${filterQ}&include_country=1`,
+      `/user/${a.uid}/to_watch?offset=${offset}&limit=${limit}&include_country=1`,
+      `/user/${a.uid}/to_watch`,
+      `/user/${a.uid}?fields=to_watch.limit(-1)`,
+      "/to_watch",
+    ];
 
-  let lastError = null;
-  for (const ep of endpoints) {
-    try {
-      const d = await req(ep, { timeout: 10000 });
-      const episodes = normalizeEpisodeList(d);
-      if (episodes.length > 0) {
+    let lastError = null;
+    for (const ep of endpoints) {
+      try {
+        const d = await req(ep, { timeout: 10000 });
+        let episodes = normalizeEpisodeList(d);
+        if (!episodes.length) continue;
+        episodes = withWatchListCategory(episodes, filter);
         const enriched = await enrichUpNextEpisodes(episodes);
         const withPoster = enriched.filter(item => Boolean(item.poster)).length;
-        console.log(`[TV] ✓ up next ${enriched.length} episodes (${ep}) posters:${withPoster}`);
-        return { episodes: enriched };
+        logDebug(
+          `[TV] watch list loaded: ${enriched.length} episodes posters:${withPoster}${filter ? ` filter:${filter}` : ""}`
+        );
+        return { episodes: enriched, filter: filter || "", source: ep };
+      } catch (e) {
+        if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
+        lastError = e;
       }
-    } catch (e) {
-      if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
-      lastError = e;
     }
-  }
 
-  // Fallback when API endpoint is sparse but tracked shows contain next episode.
-  try {
-    const watching = await getWatchingShows();
-    const derived = deriveUpNextFromShows(watching.shows);
-    if (derived.length > 0) {
-      console.log(`[TV] ✓ derived up next ${derived.length} episodes from tracked shows`);
-      return { episodes: derived, derived: true };
+    if (lastError) {
+      logDebug(`[TV] watch list empty after error: ${lastError.message}`);
     }
-  } catch (e) {
-    if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
+    return { episodes: [], filter: filter || "", empty: true };
+  });
+}
+
+async function getUpcoming(opts = {}) {
+  const a = await getAuth();
+  if (!a) throw new Error("NOT_LOGGED_IN");
+
+  const offset = Math.max(0, Number(opts.offset) || 0);
+  const showLimit = Math.max(1, Math.min(300, parsePositiveInt(opts.showLimit, 100)));
+  const back = Math.max(0, Number(opts.back ?? 1) || 1);
+  const includeWatched = Number(opts.includeWatched ?? 0) ? 1 : 0;
+  const force = Boolean(opts.forceRefresh || opts.noCache);
+  const cacheKey = `upcoming:${a.uid}:${offset}:${showLimit}:${back}:${includeWatched}`;
+  return withCachedResponse({ key: cacheKey, ttlMs: UPCOMING_CACHE_TTL_MS, force }, async () => {
+    const endpoints = [
+      `/user/${a.uid}/tocome?offset=${offset}&show_limit=${showLimit}&back=${back}&include_watched=${includeWatched}`,
+      `/user/${a.uid}/tocome?offset=${offset}&limit=${showLimit}&back=${back}&include_watched=${includeWatched}`,
+      `/user/${a.uid}/tocome?page=1&show_limit=${showLimit}&back=${back}&include_watched=${includeWatched}`,
+      `/user/${a.uid}/tocome?show_limit=${showLimit}&back=${back}&include_watched=${includeWatched}`,
+      `/user/${a.uid}/tocome`,
+    ];
+
+    let sawSuccess = false;
+    let lastError = null;
+    for (const ep of endpoints) {
+      try {
+        const d = await req(ep, { timeout: 10000 });
+        sawSuccess = true;
+        const episodes = normalizeUpcomingEpisodeList(d);
+        if (!episodes.length) continue;
+        const enriched = await enrichUpNextEpisodes(episodes);
+        logDebug(`[TV] upcoming loaded: ${enriched.length} episodes`);
+        return { episodes: enriched, source: ep };
+      } catch (e) {
+        if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
+        lastError = e;
+      }
+    }
+
+    if (lastError) {
+      logDebug(`[TV] upcoming empty after error: ${lastError.message}`);
+    }
+    return { episodes: [], empty: true, sawSuccess };
+  });
+}
+
+// Backward compatibility alias used by older popup builds.
+async function getUpNext() {
+  return getWatchList({ filter: "continue_watching", offset: 0, limit: 100 });
+}
+
+async function getWatchListBundle(opts = {}) {
+  const requested = Array.isArray(opts.filters)
+    ? opts.filters.map(normalizeWatchListFilter).filter(Boolean)
+    : [];
+  const filters = requested.length
+    ? Array.from(new Set(requested))
+    : ["continue_watching", "not_watched_for_a_while"];
+
+  const groups = {};
+  await Promise.all(filters.map(async filter => {
+    const res = await getWatchList({ ...opts, filter });
+    groups[filter] = Array.isArray(res?.episodes) ? res.episodes : [];
+  }));
+
+  return { groups, filters };
+}
+
+async function preloadDashboard(opts = {}) {
+  const tasks = [
+    getWatchList({ filter: "continue_watching", offset: 0, limit: 100 }),
+    getWatchList({ filter: "not_watched_for_a_while", offset: 0, limit: 100 }),
+    getUpcoming({ offset: 0, showLimit: 100, back: 1, includeWatched: 0 }),
+    getWatchingShows(),
+  ];
+  if (opts.includeForLater) {
+    tasks.push(getWatchList({ filter: "for_later", offset: 0, limit: 100 }));
   }
 
-  if (lastError) {
-    console.log(`[TV] up next fallback empty after error: ${lastError.message}`);
-  }
+  const settled = await Promise.allSettled(tasks);
+  const warmed = settled.filter(item => item.status === "fulfilled").length;
+  const errors = settled
+    .filter(item => item.status === "rejected")
+    .map(item => item.reason?.message || "PRELOAD_FAILED");
 
-  return { episodes: [], empty: true };
+  return {
+    success: true,
+    warmed,
+    failed: errors.length,
+    errors: errors.slice(0, 3),
+  };
 }
 
 // ========== SHOW DETAIL ==========
@@ -1156,7 +1414,7 @@ async function markWatched(episodeId) {
   const id = encodeURIComponent(rawId);
   if (!id) throw new Error("INVALID_EPISODE_ID");
 
-  return runMutationCandidates([
+  const result = await runMutationCandidates([
     {
       path: `/watched_episodes/episode/${id}?is_rewatch=0`,
       methods: ["POST"],
@@ -1187,6 +1445,8 @@ async function markWatched(episodeId) {
       bodies: [undefined, { seen: true }, { is_watched: true }],
     },
   ]);
+  clearResponseCaches();
+  return result;
 }
 
 async function markUnwatched(episodeId) {
@@ -1194,13 +1454,15 @@ async function markUnwatched(episodeId) {
   const id = encodeURIComponent(rawId);
   if (!id) throw new Error("INVALID_EPISODE_ID");
 
-  return runMutationCandidates([
+  const result = await runMutationCandidates([
     { path: `/watched_episodes/episode/${id}`, methods: ["DELETE"] },
     { path: `/episodes/${id}/watched`, methods: ["DELETE"] },
     { path: `/episode/${id}/watched`, methods: ["DELETE"] },
     { path: `/episodes/${id}/seen`, methods: ["DELETE", "POST", "PUT"], bodies: [undefined, { seen: false }, { is_watched: false }] },
     { path: `/episode/${id}/seen`, methods: ["DELETE", "POST", "PUT"], bodies: [undefined, { seen: false }, { is_watched: false }] },
   ]);
+  clearResponseCaches();
+  return result;
 }
 
 // ========== SEARCH ==========
@@ -1291,7 +1553,7 @@ async function followShow(id) {
   const sid = encodeURIComponent(rawSid);
   if (!sid) throw new Error("INVALID_SHOW_ID");
 
-  return runMutationCandidates([
+  const result = await runMutationCandidates([
     { path: `/user/${a.uid}/followed_show?show_id=${sid}`, methods: ["PUT"] },
     {
       path: `/user/${a.uid}/followed_show`,
@@ -1304,6 +1566,8 @@ async function followShow(id) {
     { path: `/show/${sid}/following`, methods: ["PUT", "POST"], bodies: [undefined, { following: true }, { is_following: true }] },
     { path: `/series/${sid}/following`, methods: ["PUT", "POST"], bodies: [undefined, { following: true }, { is_following: true }] },
   ]);
+  clearResponseCaches();
+  return result;
 }
 
 async function unfollowShow(id) {
@@ -1314,7 +1578,7 @@ async function unfollowShow(id) {
   const sid = encodeURIComponent(rawSid);
   if (!sid) throw new Error("INVALID_SHOW_ID");
 
-  return runMutationCandidates([
+  const result = await runMutationCandidates([
     { path: `/user/${a.uid}/followed_show?show_id=${sid}`, methods: ["DELETE"] },
     {
       path: `/user/${a.uid}/followed_show`,
@@ -1327,18 +1591,25 @@ async function unfollowShow(id) {
     { path: `/show/${sid}/following`, methods: ["DELETE", "POST", "PUT"], bodies: [undefined, { following: false }, { is_following: false }] },
     { path: `/series/${sid}/following`, methods: ["DELETE", "POST", "PUT"], bodies: [undefined, { following: false }, { is_following: false }] },
   ]);
+  clearResponseCaches();
+  return result;
 }
 
 // ========== MESSAGE ROUTER ==========
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log("[TV] msg:", request.action);
+  const action = request?.action || "";
+  logDebug("[TV] msg:", action);
   (async () => {
     try {
-      switch (request.action) {
+      switch (action) {
         case "login": return await login(request.username, request.password);
         case "checkAuth": return await checkAuth();
         case "logout": return await logout();
-        case "getWatchingShows": return await getWatchingShows();
+        case "getWatchingShows": return await getWatchingShows(request);
+        case "getWatchList": return await getWatchList(request);
+        case "getWatchListBundle": return await getWatchListBundle(request);
+        case "getUpcoming": return await getUpcoming(request);
+        case "preloadDashboard": return await preloadDashboard(request);
         case "getUpNext": return await getUpNext();
         case "getShowDetails": return await getShowDetails(request.showId);
         case "getShowSeasons": return await getShowSeasons(request.showId);
@@ -1358,4 +1629,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return true;
 });
 
-console.log("[TV] SW v5 loaded");
+logDebug("[TV] SW v5 loaded");
