@@ -58,4 +58,4 @@ Users can:
 
 ## Contact
 
-Publisher contact email: `REPLACE_WITH_SUPPORT_EMAIL`
+Support email: isaudcode@gmail.com
