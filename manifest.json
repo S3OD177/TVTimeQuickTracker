@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "TV Time Quick Tracker",
+  "version": "1.0.0",
+  "description": "Quickly track your TV shows and movies from TV Time without visiting the website",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://api2.tozelabs.com/*",
+    "https://msearch.tvtime.com/*",
+    "https://artworks.thetvdb.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
