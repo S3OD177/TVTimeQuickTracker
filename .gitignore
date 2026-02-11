@@ -1,2 +1,25 @@
 dist/
 .DS_Store
+
+# Environment files (if added in future)
+.env
+.env.local
+.env.*.local
+
+# Secrets and keys (if added in future)
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Development
+node_modules/
+.vscode/
+.idea/
+
+# Build artifacts
+*.zip
+!scripts/**/*.sh
+

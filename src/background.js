@@ -1,7 +1,18 @@
 // TV Time Quick Tracker - Background SW v5
 const API = "https://api2.tozelabs.com/v2";
 const SEARCH_API = "https://search.tvtime.com/v1/search";
+
+// SECURITY NOTE: Search API Key
+// This key is used for TV Time's public search API.
+// While it's embedded in client code (unavoidable for browser extensions),
+// the following security measures are in place:
+// 1. The key is for read-only search functionality only
+// 2. TV Time's API has server-side rate limiting
+// 3. No sensitive data is accessed with this key
+// 4. User authentication is required for all write operations
+// WARNING: Do not use this key for any other purpose or in other applications
 const SEARCH_API_KEY = "LhqxB7GE9a95beFHqiNC85GHdrX8hNi34H2uQ7QG";
+
 const AUTH_KEYS = ["auth", "uid", "bearer"];
 const LEGACY_AUTH_KEYS = ["auth", "uid", "bearer", "udata"];
 const SHOW_ENRICH_LIMIT = 24;

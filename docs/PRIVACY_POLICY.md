@@ -58,4 +58,4 @@ Users can:
 
 ## Contact
 
-Publisher contact email: `REPLACE_WITH_SUPPORT_EMAIL`
+Publisher contact email: `salbinzaid@gmail.com`
