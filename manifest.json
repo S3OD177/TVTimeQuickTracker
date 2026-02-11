@@ -8,11 +8,12 @@
   ],
   "host_permissions": [
     "https://api2.tozelabs.com/*",
+    "https://search.tvtime.com/*",
     "https://msearch.tvtime.com/*",
     "https://artworks.thetvdb.com/*"
   ],
   "action": {
-    "default_popup": "popup.html",
+    "default_popup": "src/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -20,7 +21,7 @@
     }
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "src/background.js"
   },
   "icons": {
     "16": "icons/icon16.png",
