@@ -557,7 +557,7 @@ async function searchPosterByName(showName) {
         poster = pickPoster(chosen);
         if (poster) break;
       }
-    } catch {}
+    } catch { }
   }
 
   showNamePosterCache.set(key, poster || "");
@@ -863,7 +863,7 @@ async function enrichUpNextEpisodes(episodes) {
 
   const missingByShow = new Map();
   normalized.forEach((ep, index) => {
-    if (ep.poster) return;
+    if (ep.poster && ep.show_name) return;
     const sid = String(ep.show_id || "");
     if (!sid) return;
     if (!missingByShow.has(sid)) missingByShow.set(sid, []);
@@ -1048,7 +1048,7 @@ function withWatchListCategory(episodes, filter) {
   return (Array.isArray(episodes) ? episodes : []).map(ep => ({
     ...ep,
     ...(normalizedFilter &&
-    !normalizeWatchListFilter(ep?.to_watch_category || ep?.toWatchCategory)
+      !normalizeWatchListFilter(ep?.to_watch_category || ep?.toWatchCategory)
       ? { to_watch_category: normalizedFilter }
       : {}),
   }));
@@ -1137,13 +1137,8 @@ async function getWatchList(opts = {}) {
   return withCachedResponse({ key: cacheKey, ttlMs: WATCHLIST_CACHE_TTL_MS, force }, async () => {
     const filterQ = filter ? `&filter=${encodeURIComponent(filter)}` : "";
     const endpoints = [
-      `/user/${a.uid}/to_watch?offset=${offset}&limit=${limit}${filterQ}&include_country=1`,
-      `/user/${a.uid}/to_watch?page=1&limit=${limit}${filterQ}&include_country=1`,
       `/user/${a.uid}/to_watch?limit=${limit}${filterQ}&include_country=1`,
-      `/user/${a.uid}/to_watch?offset=${offset}&limit=${limit}&include_country=1`,
       `/user/${a.uid}/to_watch`,
-      `/user/${a.uid}?fields=to_watch.limit(-1)`,
-      "/to_watch",
     ];
 
     let lastError = null;
@@ -1184,9 +1179,6 @@ async function getUpcoming(opts = {}) {
   const cacheKey = `upcoming:${a.uid}:${offset}:${showLimit}:${back}:${includeWatched}`;
   return withCachedResponse({ key: cacheKey, ttlMs: UPCOMING_CACHE_TTL_MS, force }, async () => {
     const endpoints = [
-      `/user/${a.uid}/tocome?offset=${offset}&show_limit=${showLimit}&back=${back}&include_watched=${includeWatched}`,
-      `/user/${a.uid}/tocome?offset=${offset}&limit=${showLimit}&back=${back}&include_watched=${includeWatched}`,
-      `/user/${a.uid}/tocome?page=1&show_limit=${showLimit}&back=${back}&include_watched=${includeWatched}`,
       `/user/${a.uid}/tocome?show_limit=${showLimit}&back=${back}&include_watched=${includeWatched}`,
       `/user/${a.uid}/tocome`,
     ];
@@ -1496,7 +1488,7 @@ async function searchShows(query) {
         }
       }
     }
-  } catch {}
+  } catch { }
 
   // 2) msearch
   try {
@@ -1511,7 +1503,7 @@ async function searchShows(query) {
       const arr = pickSearchResults(d);
       if (arr.length > 0) return { results: arr, remote: "msearch" };
     }
-  } catch {}
+  } catch { }
 
   // 3) Legacy API search endpoints
   for (const ep of [
@@ -1539,7 +1531,7 @@ async function searchShows(query) {
       const matches = showsResult.shows.filter(s => (s.name || s.title || "").toLowerCase().includes(ql));
       if (matches.length > 0) return { results: matches, local: true };
     }
-  } catch {}
+  } catch { }
 
   return { results: [] };
 }
@@ -1630,3 +1622,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 logDebug("[TV] SW v5 loaded");
+
+// ========== CONTEXT MENU ==========
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: "search-tvtime",
+    title: "Search '%s' on TV Time",
+    contexts: ["selection"],
+  });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === "search-tvtime" && info.selectionText) {
+    const query = info.selectionText.trim();
+    chrome.storage.local.set({ pendingSearch: query }, () => {
+      chrome.action.openPopup();
+    });
+  }
+});
