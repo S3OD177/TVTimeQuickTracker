@@ -31,6 +31,8 @@
 
   --shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
+
+  --hover: rgba(255, 255, 255, 0.06);
 }
 
 * {
@@ -53,6 +55,23 @@ body {
 
 .hidden {
   display: none !important;
+}
+
+.offline-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  background: #e74c3c;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
 }
 
 .screen {
@@ -400,6 +419,51 @@ body {
   backdrop-filter: blur(4px);
 }
 
+/* ============ SKELETON LOADING ============ */
+@keyframes sk-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.sk-pulse {
+  background: linear-gradient(90deg, var(--bg-card) 25%, var(--bg-elevated) 50%, var(--bg-card) 75%);
+  background-size: 200% 100%;
+  animation: sk-shimmer 1.4s infinite;
+  border-radius: 6px;
+}
+
+.skeleton-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.skeleton-poster {
+  width: 44px;
+  height: 60px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.skeleton-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sk-line {
+  height: 10px;
+  border-radius: 4px;
+}
+
+.skeleton-show-card {
+  border-radius: 8px;
+  aspect-ratio: 2/3;
+}
+
 /* ============ LOADING / EMPTY / ERROR ============ */
 .state-msg {
   display: flex;
@@ -538,6 +602,33 @@ body {
 
 .watchlist-load-wrap {
   padding: 0 16px 12px;
+}
+
+.load-more-btn {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 4px 16px 12px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.load-more-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.load-more-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .watchlist-load-btn {
@@ -875,6 +966,26 @@ body {
   color: var(--text-muted);
 }
 
+.search-clear-btn {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 2px;
+  line-height: 0;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.search-clear-btn:hover {
+  color: var(--text);
+}
+
+.search-clear-btn.visible {
+  display: block;
+}
+
 .search-result {
   display: flex;
   align-items: center;
@@ -1110,6 +1221,35 @@ body {
   color: var(--accent);
 }
 
+.scroll-top-btn {
+  position: fixed;
+  bottom: 20px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #0d0f14;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  transition: opacity 0.2s, transform 0.2s;
+  z-index: 20;
+}
+
+.scroll-top-btn:hover {
+  filter: brightness(1.15);
+  transform: translateY(-2px);
+}
+
+.scroll-top-btn.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* ============ SHOW DETAIL ============ */
 #show-detail {
   background:
@@ -1157,22 +1297,6 @@ body {
   overflow: hidden;
 }
 
-.detail-hero--no-img {
-  background: linear-gradient(135deg, #0f1116 0%, #1e212b 100%);
-  min-height: 140px;
-}
-
-.detail-hero--no-img .hero-fallback-text {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 120px;
-  font-weight: 800;
-  color: rgba(255, 255, 255, 0.03);
-  user-select: none;
-  pointer-events: none;
-}
 
 .detail-hero .hero-bg {
   width: 100%;
@@ -1329,50 +1453,6 @@ body {
   letter-spacing: 0.5px;
 }
 
-/* Circular Progress Card */
-.progress-ring-card {
-  margin: 16px 16px 0;
-  padding: 16px;
-  border-radius: 16px;
-  background: linear-gradient(145deg, #13161f 0%, #10121a 100%);
-  border: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  animation: slideUpFade 0.4s ease-out 0.15s backwards;
-}
-
-.progress-ring-wrapper {
-  position: relative;
-  width: 80px;
-  height: 80px;
-  flex-shrink: 0;
-}
-
-.progress-ring {
-  transform: rotate(-90deg);
-}
-
-.progress-ring-circle-bg {
-  color: rgba(255, 255, 255, 0.05);
-}
-
-.progress-ring-circle {
-  color: var(--accent);
-  transition: stroke-dashoffset 1s ease-out;
-  /* Will be animated via JS setting the style */
-}
-
-.progress-ring-text {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 18px;
-  font-weight: 800;
-  color: #fff;
-}
 
 /* ============ SHOW DETAIL (IMMERSIVE REDESIGN) ============ */
 .show-detail-panel {
@@ -1486,6 +1566,10 @@ body {
   margin-bottom: 12px;
 }
 
+.simple-meta-row--genres {
+  margin-bottom: 4px;
+}
+
 .simple-stat-badge {
   background: rgba(255, 255, 255, 0.1);
   padding: 4px 8px;
@@ -1494,6 +1578,72 @@ body {
   color: var(--text-secondary);
 }
 
+/* Hero Overview Section */
+.hero-overview-section {
+  padding: 0 20px 16px;
+}
+
+.overview-glass {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.overview-text,
+.overview-full {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.overview-toggle {
+  display: inline-block;
+  margin-top: 6px;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 0.15s;
+}
+
+.overview-toggle:hover {
+  opacity: 0.8;
+}
+
+/* Show truncated by default, full text only when expanded */
+.overview-glass .overview-full {
+  display: none;
+}
+
+.overview-glass.overview-expanded .overview-text {
+  display: none;
+}
+
+.overview-glass.overview-expanded .overview-full {
+  display: inline;
+}
+
+/* Hero stat classes */
+.hero-progress-text {
+  color: #4ade80;
+  font-weight: 700;
+}
+
+.hero-dot {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.hero-time-left {
+  color: var(--text-secondary);
+}
+
+.hero-genre-badge {
+  background: rgba(255, 255, 255, 0.05);
+}
 
 
 /* Next Episode Card */
@@ -1577,42 +1727,6 @@ body {
 }
 
 
-/* Returning / Ended Banner */
-.detail-returning {
-  margin: 16px 16px 0;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(34, 197, 94, 0.2);
-  background: rgba(34, 197, 94, 0.08);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  animation: slideUpFade 0.4s ease-out 0.25s backwards;
-}
-
-.detail-returning svg {
-  color: #4ade80;
-  flex-shrink: 0;
-}
-
-.detail-returning strong {
-  color: #86efac;
-}
-
-.detail-returning.ended {
-  border-color: rgba(239, 68, 68, 0.2);
-  background: rgba(239, 68, 68, 0.08);
-}
-
-.detail-returning.ended svg {
-  color: #f87171;
-}
-
-.detail-returning.ended strong {
-  color: #fca5a5;
-}
 
 /* External links */
 .detail-links {
@@ -1703,6 +1817,23 @@ body {
   border-bottom-color: transparent;
 }
 
+.season-mark-complete-btn {
+  opacity: 0;
+  color: var(--success);
+  transition: opacity 0.15s;
+  padding: 4px;
+  flex-shrink: 0;
+}
+
+.season-header:hover .season-mark-complete-btn {
+  opacity: 1;
+}
+
+.season-mark-complete-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .season-head-main {
   flex: 1;
   min-width: 0;
@@ -1774,24 +1905,30 @@ body {
 }
 
 .season-episodes {
-  transition: none;
+  overflow: hidden;
+  max-height: 2000px;
+  transition: max-height 0.35s ease, opacity 0.25s ease;
+  opacity: 1;
   background: #13161f;
 }
 
 .season-episodes.collapsed {
-  display: none;
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .season-tools {
-  padding: 12px;
+  padding: 10px 12px;
   background: rgba(13, 16, 23, 0.5);
   border-bottom: 1px solid var(--border);
 }
 
-.season-action-bar {
-  margin-top: 10px;
+.season-toolbar-row {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 
 .season-quick-btn {
@@ -1822,6 +1959,10 @@ body {
   font-size: 12px;
 }
 
+.season-search-bar {
+  flex: 1;
+}
+
 .season-filter-row {
   display: flex;
   gap: 6px;
@@ -1844,13 +1985,6 @@ body {
   letter-spacing: 0.2px;
   cursor: pointer;
   white-space: nowrap;
-}
-
-.season-filter-btn.active {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-dim);
-  box-shadow: 0 0 12px rgba(245, 197, 24, 0.15);
 }
 
 .season-filter-btn.active {
@@ -2200,6 +2334,34 @@ body {
   color: var(--text-muted);
   border-color: var(--border);
   background: rgba(255, 255, 255, 0.03);
+}
+
+/* Season next hint */
+.season-next-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(52, 211, 153, 0.06);
+  border-top: 1px solid rgba(52, 211, 153, 0.2);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.season-next-btn {
+  background: var(--success);
+  color: #000;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.season-next-btn:hover {
+  opacity: 0.85;
 }
 
 /* ============ TOAST ============ */
@@ -2562,20 +2724,8 @@ body {
   opacity: 0.8;
 }
 
-.season-tools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 16px 12px;
-  position: sticky;
-  top: 108px;
-  /* 60px Header + ~48px Tabs */
-  z-index: 80;
-  background: var(--bg);
-  margin-bottom: 8px;
-  border-bottom: 1px solid var(--border);
-  margin-top: 10px;
-  /* Add breathing room */
+.season-tools-secondary {
+  display: none;
 }
 
 
@@ -2635,12 +2785,6 @@ body {
   border-bottom-left-radius: 8px;
   border-bottom-right-radius: 8px;
   background: rgba(13, 15, 20, 0.3);
-  overflow: hidden;
-  transition: all 0.3s;
-}
-
-.season-episodes.collapsed {
-  display: none;
 }
 
 .chevron {

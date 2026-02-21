@@ -40,6 +40,14 @@
     </div>
   </div>
 
+  <!-- OFFLINE BANNER -->
+  <div id="offline-banner" class="offline-banner hidden">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>
+    </svg>
+    No internet connection
+  </div>
+
   <!-- MAIN -->
   <div id="main-screen" class="screen hidden">
     <header class="app-header">
@@ -96,6 +104,9 @@
             <line x1="21" y1="21" x2="16.65" y2="16.65" />
           </svg>
           <input type="text" id="watchlist-search-input" placeholder="Search in Watch List...">
+          <button id="watchlist-search-clear" class="search-clear-btn" title="Clear search" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
         <div id="watch-list-list"></div>
       </div>
@@ -147,6 +158,9 @@
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
             <input type="text" id="search-input" placeholder="Search TV shows...">
+            <button id="search-clear" class="search-clear-btn" title="Clear search" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
           </div>
           <div id="search-results"></div>
         </div>
@@ -167,6 +181,11 @@
     </div>
     <div id="detail-hero"></div>
     <div id="detail-content"></div>
+    <button id="scroll-to-top" class="scroll-top-btn hidden" title="Back to top">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <polyline points="18 15 12 9 6 15"/>
+      </svg>
+    </button>
   </div>
 
   <script src="popup.js?v=20260211-perf-preload1"></script>

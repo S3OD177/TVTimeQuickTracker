@@ -17,7 +17,31 @@ const WATCHLIST_FILTERS = new Set([
   "not_started_yet",
   "for_later",
 ]);
-const showDetailsCache = new Map();
+const showDetailsCacheStore = new Map(); // { value, ts }
+const SHOW_DETAILS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const showDetailsCache = {
+  has(key) {
+    const entry = showDetailsCacheStore.get(key);
+    if (!entry) return false;
+    if (Date.now() - entry.ts > SHOW_DETAILS_CACHE_TTL_MS) {
+      showDetailsCacheStore.delete(key);
+      return false;
+    }
+    return true;
+  },
+  get(key) {
+    return showDetailsCacheStore.get(key)?.value;
+  },
+  set(key, value) {
+    showDetailsCacheStore.set(key, { value, ts: Date.now() });
+  },
+  delete(key) {
+    showDetailsCacheStore.delete(key);
+  },
+  clear() {
+    showDetailsCacheStore.clear();
+  },
+};
 const showNamePosterCache = new Map();
 const seasonProbePosterCache = new Map();
 const responseCache = new Map();
@@ -58,6 +82,7 @@ function setCachedResponse(key, payload) {
 function clearResponseCaches() {
   responseCache.clear();
   inflightResponseCache.clear();
+  showDetailsCacheStore.clear();
 }
 
 async function withCachedResponse({ key, ttlMs, force }, fetcher) {
@@ -347,7 +372,12 @@ function showId(show) {
 }
 
 function showHasPoster(show) {
-  return Boolean(show?.poster || show?.image || show?.cover || show?.artwork);
+  return Boolean(
+    (typeof show?.poster === "string" && show.poster) ||
+    (typeof show?.image === "string" && show.image) ||
+    (typeof show?.cover === "string" && show.cover) ||
+    (typeof show?.artwork === "string" && show.artwork)
+  );
 }
 
 function mediaUrlFromCandidate(candidate, depth = 0) {
@@ -928,12 +958,16 @@ async function runWithLimit(items, limit, task) {
 }
 
 async function enrichShows(shows) {
-  const normalized = (Array.isArray(shows) ? shows : []).map(s => ({
-    ...s,
-    following: true,
-    is_following: true,
-    is_followed: true,
-  }));
+  const normalized = (Array.isArray(shows) ? shows : []).map(s => {
+    const posterStr = pickPoster(s);
+    return {
+      ...s,
+      poster: posterStr || s.poster || "",
+      following: true,
+      is_following: true,
+      is_followed: true,
+    };
+  });
 
   const missingPosters = normalized
     .map((s, index) => ({ index, id: showId(s), hasPoster: showHasPoster(s) }))
@@ -945,7 +979,7 @@ async function enrichShows(shows) {
       const details = await getShowDetails(item.id);
       if (!details?.id || details.result === "KO") return;
 
-      const poster = details.poster || details.image || details.cover || "";
+      const poster = pickPoster(details);
       if (poster && !showHasPoster(normalized[item.index])) {
         normalized[item.index].poster = poster;
       }
@@ -1212,6 +1246,17 @@ async function getUpNext() {
   return getWatchList({ filter: "continue_watching", offset: 0, limit: 100 });
 }
 
+function updateBadgeCount(groups) {
+  try {
+    const unwatched = Object.values(groups || {}).reduce((sum, eps) => {
+      return sum + (Array.isArray(eps) ? eps.filter(ep => !ep.watched && !ep.is_watched && !ep.is_seen).length : 0);
+    }, 0);
+    const text = unwatched > 0 ? (unwatched > 99 ? "99+" : String(unwatched)) : "";
+    chrome.action.setBadgeText({ text });
+    chrome.action.setBadgeBackgroundColor({ color: "#f5c518" });
+  } catch { /* badge API may not be available */ }
+}
+
 async function getWatchListBundle(opts = {}) {
   const requested = Array.isArray(opts.filters)
     ? opts.filters.map(normalizeWatchListFilter).filter(Boolean)
@@ -1226,6 +1271,7 @@ async function getWatchListBundle(opts = {}) {
     groups[filter] = Array.isArray(res?.episodes) ? res.episodes : [];
   }));
 
+  updateBadgeCount(groups);
   return { groups, filters };
 }
 

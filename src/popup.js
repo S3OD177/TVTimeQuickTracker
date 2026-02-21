@@ -13,7 +13,6 @@ const on = (selector, event, handler) => {
 
 const esc = s => s ? String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") : "";
 const attr = s => s ? String(s).replace(/"/g, "&quot;") : "";
-const purl = u => u && !isPlaceholderMediaUrl(u) ? safeMediaUrl(u) : "";
 
 let currentTab = "watch-list";
 let lastMainTab = "watch-list";
@@ -84,6 +83,30 @@ function showToast(message, type = "info") {
   }, 2500);
 }
 
+function showConfirmToast(message) {
+  return new Promise(resolve => {
+    let container = document.getElementById("toast-container");
+    if (!container) {
+      container = document.createElement("div");
+      container.id = "toast-container";
+      container.style.cssText = "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none;";
+      document.body.appendChild(container);
+    }
+    const toast = document.createElement("div");
+    toast.style.cssText = "background:#1e2130;color:#fff;padding:10px 14px;border-radius:10px;font-size:12px;border:1px solid rgba(255,255,255,0.12);opacity:0;transition:opacity .25s;pointer-events:auto;display:flex;flex-direction:column;align-items:center;gap:8px;max-width:240px;text-align:center;";
+    toast.innerHTML = `<span>${message}</span><div style="display:flex;gap:8px"><button class="confirm-yes" style="background:var(--accent);color:#000;border:none;border-radius:6px;padding:4px 14px;font-weight:700;cursor:pointer;font-size:11px;">Yes</button><button class="confirm-no" style="background:rgba(255,255,255,0.1);color:#fff;border:none;border-radius:6px;padding:4px 14px;font-weight:700;cursor:pointer;font-size:11px;">No</button></div>`;
+    container.appendChild(toast);
+    requestAnimationFrame(() => { toast.style.opacity = "1"; });
+    const finish = val => {
+      toast.style.opacity = "0";
+      setTimeout(() => toast.remove(), 250);
+      resolve(val);
+    };
+    toast.querySelector(".confirm-yes").addEventListener("click", () => finish(true));
+    toast.querySelector(".confirm-no").addEventListener("click", () => finish(false));
+  });
+}
+
 // ========== INIT ==========
 document.addEventListener("DOMContentLoaded", () => {
   setupEvents();
@@ -99,8 +122,61 @@ function setupEvents() {
   on("#quick-panel-back", "click", closeQuickPanel);
   on("#search-input", "input", handleSearchInput);
   on("#watchlist-search-input", "input", handleWatchListSearchInput);
+
+  on("#search-clear", "click", () => {
+    const inp = $("#search-input");
+    if (!inp) return;
+    inp.value = "";
+    inp.dispatchEvent(new Event("input"));
+    inp.focus();
+  });
+
+  on("#watchlist-search-clear", "click", () => {
+    const inp = $("#watchlist-search-input");
+    if (!inp) return;
+    inp.value = "";
+    inp.dispatchEvent(new Event("input"));
+    inp.focus();
+  });
+
+  // Show/hide clear buttons based on input value
+  on("#search-input", "input", e => {
+    $("#search-clear")?.classList.toggle("visible", Boolean(e.target.value));
+  });
+  on("#watchlist-search-input", "input", e => {
+    $("#watchlist-search-clear")?.classList.toggle("visible", Boolean(e.target.value));
+  });
   on("#detail-back", "click", closeShowDetail);
   on("#upcoming-view-btn", "click", toggleUpcomingView);
+  on("#scroll-to-top", "click", () => {
+    $("#show-detail")?.scrollTo({ top: 0, behavior: "smooth" });
+  });
+  on("#show-detail", "scroll", () => {
+    const detail = $("#show-detail");
+    const btn = $("#scroll-to-top");
+    if (btn) btn.classList.toggle("hidden", !detail || detail.scrollTop < 200);
+  });
+
+  function updateOfflineBanner() {
+    const banner = $("#offline-banner");
+    if (banner) banner.classList.toggle("hidden", navigator.onLine);
+  }
+  window.addEventListener("online", updateOfflineBanner);
+  window.addEventListener("offline", updateOfflineBanner);
+  updateOfflineBanner();
+
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    const detail = $("#show-detail");
+    if (detail && !detail.classList.contains("hidden")) {
+      closeShowDetail();
+      return;
+    }
+    const panel = $("#quick-panel");
+    if (panel && !panel.classList.contains("hidden")) {
+      closeQuickPanel();
+    }
+  });
 
   on("#toggle-password", "click", () => {
     const input = $("#password");
@@ -412,7 +488,7 @@ function setupEvents() {
       showToast("UI mismatch: missing watch list container", "error");
       return;
     }
-    c.innerHTML = stateHTML("loading", "Loading episodes...");
+    c.innerHTML = skeletonListHTML(5);
 
     try {
       const bundle = await msg({
@@ -473,10 +549,17 @@ function setupEvents() {
       return;
     }
 
-    container.innerHTML = `<div class="upnext-queue">${rows.map(ep => watchListCardHTML(ep)).join("")}</div>`;
+    const forLaterLoaded = watchListState.loadedFilters.has(WATCHLIST_FILTERS.FOR_LATER);
+    const loadMoreBtn = (!query && !forLaterLoaded)
+      ? `<button id="load-for-later-btn" class="load-more-btn">Load For Later</button>`
+      : "";
+    container.innerHTML = `<div class="upnext-queue">${rows.map(ep => watchListCardHTML(ep)).join("")}</div>${loadMoreBtn}`;
 
     bindImageFallbacks(container);
     bindWatchListQueueEvents(container);
+
+    const forLaterBtn = container.querySelector("#load-for-later-btn");
+    if (forLaterBtn) forLaterBtn.addEventListener("click", loadForLaterGroup);
   }
 
 
@@ -484,18 +567,25 @@ function setupEvents() {
 
 
   function watchListCardHTML(ep) {
-    const cardHtml = episodeCardHTML(ep);
-    const actionsHtml = `
-    <div class="item-quick-actions">
-      <button class="qa-btn" data-qa="hide-show" data-sid="${attr(ep.showId)}" title="Hide Show">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
-      </button>
-      <button class="qa-btn" data-qa="remove-show" data-sid="${attr(ep.showId)}" title="Stop Watching">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-      </button>
+    return `
+    <div class="episode-card show-item" data-sid="${attr(ep.showId)}" data-sname="${esc(ep.showName)}">
+      <div class="ep-poster">${ep.poster ? `<img src="${ep.poster}" alt="" data-fallback="hide">` : "📺"}</div>
+      <div class="ep-info">
+        <div class="ep-show">${esc(ep.showName)}</div>
+        <div class="ep-title">${esc(ep.name || `Episode ${ep.number}`)}</div>
+        <div class="ep-meta">
+          <span>S${pad(ep.seasonNumber)}E${pad(ep.number)}${ep.airDate ? " · " + fmtDate(ep.airDate) : ""}</span>
+          ${airStatusBadgeHTML(ep.airDate)}
+        </div>
+      </div>
+      <button class="watch-btn ${ep.watched ? "watched" : ""}" data-eid="${attr(ep.id)}">${ep.watched ? checkSVG : playSVG}</button>
+      <div class="item-quick-actions">
+        <button class="qa-btn" data-qa="remove-show" data-sid="${attr(ep.showId)}" title="Stop Watching">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
     </div>
   `;
-    return cardHtml.replace('</div>', `${actionsHtml}</div>`);
   }
 
   async function loadForLaterGroup() {
@@ -578,18 +668,14 @@ function setupEvents() {
         const sid = btn.dataset.sid;
         if (!sid) return;
 
-        if (action === "hide-show") {
-          // Not fully implemented in background yet, but let's assume we have an action or just Archive
-          // For now, let's just toast
-          showToast("Hide feature coming soon!");
-        } else if (action === "remove-show") {
+        if (action === "remove-show") {
           if (confirm("Stop watching this show?")) {
-            // call background to stop watching
-            const r = await msg({ action: "stopWatching", showId: sid });
+            const r = await msg({ action: "unfollowShow", showId: sid });
             if (!r.error) {
               showToast("Show removed");
-              // refresh
-              refreshCurrentTab();
+              watchListState = createEmptyWatchListState();
+              upNextCache = null;
+              await loadWatchList({ forceRefresh: true });
             } else {
               showToast("Failed to remove show", "error");
             }
@@ -606,7 +692,7 @@ function setupEvents() {
       showToast("UI mismatch: missing upcoming container", "error");
       return;
     }
-    c.innerHTML = stateHTML("loading", "Loading upcoming...");
+    c.innerHTML = skeletonListHTML(4);
 
     try {
       const r = await msg({
@@ -723,24 +809,6 @@ function setupEvents() {
     return normalized;
   }
 
-  function upcomingCardHTML(ep) {
-    return `
-    <div class="upcoming-card" data-sid="${attr(ep.showId)}" data-sname="${esc(ep.showName)}">
-      <div class="uc-poster"><img src="${ep.poster || "icons/icon48.png"}" alt="" data-fallback="hide"></div>
-      <div class="uc-info">
-        <div class="uc-show">${esc(ep.showName)}</div>
-        <div class="uc-title">${esc(ep.seasonNumber)}x${esc(ep.number)} ${ep.name ? " · " + esc(ep.name) : ""}</div>
-        <div class="uc-meta">
-          <span class="uc-time">${formatUpcomingTime(ep)}</span>
-          ${airStatusBadgeHTML(ep.airDate)}
-        </div>
-      </div>
-      <button class="watch-btn ${ep.watched ? "watched" : ""}" data-eid="${attr(ep.id)}">${ep.watched ? checkSVG : playSVG}</button>
-    </div>
-  `;
-  }
-
-
   function bindUpcomingQueueEvents(container) {
     container.querySelectorAll(".upcoming-card").forEach(card =>
       card.addEventListener("click", () => {
@@ -762,7 +830,7 @@ function setupEvents() {
   async function loadMyShows(opts = {}) {
     const c = $("#my-shows-list");
     if (!c) return;
-    c.innerHTML = stateHTML("loading", "Loading shows...");
+    c.innerHTML = skeletonShowsHTML(8);
 
     try {
       const r = await msg({
@@ -915,9 +983,28 @@ function setupEvents() {
       content.querySelectorAll(".season-section").forEach(section => {
         const header = section.querySelector(".season-header");
         if (!header) return;
-        header.addEventListener("click", () => {
+        header.addEventListener("click", e => {
+          if (e.target.closest(".season-mark-complete-btn")) return;
           toggleSeasonSection(section, requestId);
         });
+        header.addEventListener("keydown", e => {
+          if ((e.key === "Enter" || e.key === " ") && !e.target.closest(".season-mark-complete-btn")) {
+            e.preventDefault();
+            toggleSeasonSection(section, requestId);
+          }
+        });
+        const markCompleteBtn = section.querySelector(".season-mark-complete-btn");
+        if (markCompleteBtn) {
+          markCompleteBtn.addEventListener("click", async e => {
+            e.stopPropagation();
+            markCompleteBtn.disabled = true;
+            if (section.dataset.loaded !== "true") {
+              await ensureSeasonEpisodesLoaded(section, requestId);
+            }
+            await handleSeasonBulkAction(section, "season");
+            markCompleteBtn.disabled = false;
+          });
+        }
       });
 
       const saved = showDetailStateCache.get(String(showId));
@@ -980,6 +1067,8 @@ function setupEvents() {
       "";
 
     // New: extract extra API fields
+    const imdbId = details.imdb_id || details.imdbId || details.external_ids?.imdb_id || "";
+    const tmdbId = details.tmdb_id || details.tmdbId || details.id || "";
     const rating = Number(details.rating || details.vote_average || details.imdb_rating || 0);
     const rawGenres = details.genres || details.genre || details.genre_list || [];
     const genres = (Array.isArray(rawGenres) ? rawGenres : String(rawGenres).split(","))
@@ -1012,15 +1101,15 @@ function setupEvents() {
            ${rating > 0 ? `<span class="simple-stat-badge">★ ${rating.toFixed(1)}</span>` : ""}
          </div>
 
-         <div class="simple-meta-row" style="margin-bottom:16px;">
-            ${genres.length ? genres.slice(0, 3).map(g => `<span class="simple-stat-badge" style="background:rgba(255,255,255,0.05)">${esc(g)}</span>`).join("") : ""}
+         <div class="simple-meta-row simple-meta-row--genres">
+            ${genres.length ? genres.slice(0, 3).map(g => `<span class="simple-stat-badge hero-genre-badge">${esc(g)}</span>`).join("") : ""}
          </div>
 
          <div class="simple-meta-row">
-            <span style="color:#4ade80;font-weight:700">${progressValue}% Watched</span>
-            <span style="color:rgba(255,255,255,0.3)">•</span>
+            <span class="hero-progress-text">${progressValue}% Watched</span>
+            <span class="hero-dot">•</span>
             <span>${watchedEpisodes} / ${totalEpisodes} eps</span>
-            ${timeStr ? `<span style="color:rgba(255,255,255,0.3)">•</span><span>${timeStr} left</span>` : ""}
+            ${timeStr ? `<span class="hero-dot">•</span><span class="hero-time-left">${timeStr} left</span>` : ""}
          </div>
        </div>
     </div>
@@ -1029,10 +1118,23 @@ function setupEvents() {
       ${details.overview ? `
         <div class="overview-glass">
            <span class="overview-text">${esc(details.overview).substring(0, 180)}${details.overview.length > 180 ? "..." : ""}</span>
-           ${details.overview.length > 180 ? `<div style="display:none" class="overview-full">${esc(details.overview)}</div><button class="overview-toggle">Read more</button>` : ""}
+           ${details.overview.length > 180 ? `<div class="overview-full">${esc(details.overview)}</div><button class="overview-toggle" aria-label="Read more of overview">Read more</button>` : ""}
         </div>
       ` : ""}
     </div>
+
+    ${(imdbId || tmdbId) ? `
+    <div class="detail-links">
+      ${imdbId ? `<a class="detail-link-btn" href="https://www.imdb.com/title/${attr(imdbId)}/" target="_blank" rel="noopener noreferrer" aria-label="Open on IMDb">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="2" y="2" width="20" height="20" rx="3" fill="#f5c518"/><text x="12" y="16" text-anchor="middle" font-size="9" font-weight="900" fill="#000">IMDb</text></svg>
+        IMDb
+      </a>` : ""}
+      ${tmdbId ? `<a class="detail-link-btn" href="https://www.themoviedb.org/tv/${attr(String(tmdbId))}" target="_blank" rel="noopener noreferrer" aria-label="Open on TMDB">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#032541"/><text x="12" y="16" text-anchor="middle" font-size="7" font-weight="900" fill="#01b4e4">TMDB</text></svg>
+        TMDB
+      </a>` : ""}
+    </div>
+    ` : ""}
     `;
 
     hero.innerHTML = html;
@@ -1041,19 +1143,13 @@ function setupEvents() {
     // Bind text toggle
     const toggle = hero.querySelector(".overview-toggle");
     if (toggle) {
+      const glass = hero.querySelector(".overview-glass");
       toggle.addEventListener("click", () => {
-        const full = hero.querySelector(".overview-full");
-        const short = hero.querySelector(".overview-text");
-        if (full.style.display === "none") {
-          full.style.display = "inline";
-          short.style.display = "none";
-          toggle.textContent = "Show less";
-        } else {
-          full.style.display = "none";
-          short.style.display = "inline";
-          toggle.textContent = "Read more";
-        }
+        const expanded = glass.classList.toggle("overview-expanded");
+        toggle.textContent = expanded ? "Show less" : "Read more";
+        toggle.setAttribute("aria-expanded", String(expanded));
       });
+      toggle.setAttribute("aria-expanded", "false");
     }
 
     // Scroll effect binding (can be done here or mainly in scroll listener)
@@ -1074,13 +1170,16 @@ function setupEvents() {
 
     return `
     <div class="season-section" data-show-id="${attr(showId)}" data-season="${seasonNumber}" data-seen-hint="${Math.max(0, watched)}" data-loaded="false" data-loading="false" data-filter="all">
-      <div class="season-header ${expanded ? "expanded" : ""}">
+      <div class="season-header ${expanded ? "expanded" : ""}" role="button" tabindex="0" aria-expanded="${expanded ? "true" : "false"}" aria-label="Season ${seasonNumber}: ${watched} of ${total} watched">
         <div class="season-title-row">
             <span class="season-title">Season ${seasonNumber}</span>
             ${remaining > 0 ? `<span class="season-progress">${remaining} left</span>` : '<span class="season-progress" style="color:var(--success)">Completed</span>'}
         </div>
-        <div style="font-size:11px;color:rgba(255,255,255,0.4)">${watched}/${total}</div>
-        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        <span class="season-counter" style="font-size:11px;color:rgba(255,255,255,0.4)">${watched}/${total}</span>
+        ${remaining > 0 ? `<button class="season-mark-complete-btn icon-btn" title="Mark season complete" data-season-action="season">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        </button>` : ""}
+        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
       </div>
       
       <!-- No progress pill, using text instead -->
@@ -1101,7 +1200,15 @@ function setupEvents() {
     // Toggle
     if (wasExpanded) {
       header.classList.remove("expanded");
+      header.setAttribute("aria-expanded", "false");
       body.classList.add("collapsed");
+      // Reset filter/search state on collapse
+      section.dataset.filter = "all";
+      const searchInput = section.querySelector(".season-search-input");
+      if (searchInput) searchInput.value = "";
+      section.querySelectorAll(".season-filter-btn").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.filter === "all");
+      });
     } else {
       // Close others (accordion style) - optional, but nice for cleaner UI
       const content = $("#detail-content");
@@ -1115,6 +1222,7 @@ function setupEvents() {
       }
 
       header.classList.add("expanded");
+      header.setAttribute("aria-expanded", "true");
       body.classList.remove("collapsed");
       await ensureSeasonEpisodesLoaded(section, requestId);
     }
@@ -1135,10 +1243,28 @@ function setupEvents() {
     }
 
     section.dataset.loading = "true";
-    body.innerHTML = '<div class="season-placeholder loading"><span class="spinner"></span><span>Loading episodes...</span></div>';
+    body.innerHTML = [1, 2, 3, 4].map(() => `
+      <div class="ep-row ep-row--skeleton">
+        <div class="ep-thumb sk-pulse"></div>
+        <div class="ep-main">
+          <div class="sk-pulse" style="height:12px;width:60%;margin-bottom:8px;"></div>
+          <div class="sk-pulse" style="height:10px;width:35%;"></div>
+        </div>
+        <div class="ep-actions-wrap">
+          <div class="sk-pulse" style="width:40px;height:26px;border-radius:8px;"></div>
+          <div class="sk-pulse" style="width:32px;height:32px;border-radius:50%;"></div>
+        </div>
+      </div>
+    `).join("");
 
     try {
-      const res = await msg({ action: "getSeasonEpisodes", showId, seasonNumber });
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Request timed out")), 30000)
+      );
+      const res = await Promise.race([
+        msg({ action: "getSeasonEpisodes", showId, seasonNumber }),
+        timeoutPromise,
+      ]);
       if (requestId !== detailRequestId) return;
 
       if (res.error) {
@@ -1157,11 +1283,19 @@ function setupEvents() {
     } catch {
       if (requestId !== detailRequestId) return;
       body.innerHTML = `
-        <div class="season-placeholder error">
-          <div style="margin-bottom:8px">Failed to load episodes</div>
-          <button class="season-action-btn" onclick="this.closest('.season-section').dataset.loading='false';this.closest('.season-section').querySelector('.season-header-modern').click();">Retry</button>
+        <div class="season-placeholder error" style="flex-direction:column;gap:8px;">
+          <span>Failed to load episodes</span>
+          <button class="season-action-btn season-retry-btn">Retry</button>
         </div>
       `;
+      const retryBtn = body.querySelector(".season-retry-btn");
+      if (retryBtn) {
+        retryBtn.addEventListener("click", () => {
+          section.dataset.loading = "false";
+          section.dataset.loaded = "false";
+          ensureSeasonEpisodesLoaded(section, requestId);
+        });
+      }
     } finally {
       section.dataset.loading = "false";
     }
@@ -1190,21 +1324,17 @@ function setupEvents() {
     const visibleRows = filterSeasonEpisodeRows(searchedRows, filter);
 
     body.innerHTML = `
-    <div class="season-tools-secondary">
-       <div class="season-search-bar" style="flex:1;margin-top:0;">
-        <input type="text" class="season-search-input" placeholder="Search episode..." value="${esc(section.dataset.searchTerm || "")}">
-        <span class="search-icon">🔍</span>
-      </div>
-      <div class="season-action-bar">
-        <button type="button" class="season-quick-btn" data-season-action="aired" title="Mark all aired episodes as watched">
-           <span class="btn-icon">📦</span> Aired
-        </button>
-        <button type="button" class="season-quick-btn" data-season-action="season" title="Mark entire season as watched">
-           <span class="btn-icon">⭐</span> Season
-        </button>
-      </div>
-    </div>
     <div class="season-tools">
+      <div class="season-toolbar-row">
+        <div class="season-search-bar">
+          <input type="text" class="season-search-input" placeholder="Search episode..." value="${esc(section.dataset.searchTerm || "")}" aria-label="Search episodes in this season">
+          <span class="search-icon">🔍</span>
+        </div>
+        <button type="button" class="season-quick-btn" data-season-action="aired" title="Mark all aired as watched">📦</button>
+        <button type="button" class="season-quick-btn" data-season-action="season" title="Mark season complete">⭐</button>
+        <button type="button" class="season-quick-btn season-quick-btn--unwatched" data-season-action="unwatch" title="Mark all episodes unwatched">↩</button>
+        <button type="button" class="season-quick-btn season-quick-btn--refresh" data-season-action="refresh" title="Refresh season episodes">⟳</button>
+      </div>
       <div class="season-filter-row">
         ${seasonFilterButtonHTML("all", "All", filter)}
         ${seasonFilterButtonHTML("unwatched", "Unwatched", filter)}
@@ -1266,6 +1396,23 @@ function setupEvents() {
 
     const watched = allRows.filter(ep => ep.watched).length;
     updateSeasonBadge(section, watched, allRows.length);
+
+    // Next-season hint when all episodes are watched
+    if (watched === allRows.length && allRows.length > 0) {
+      const seasonNum = Number(section.dataset.season || 0);
+      const nextSection = section.nextElementSibling;
+      if (nextSection && nextSection.classList.contains("season-section")) {
+        const nextSeasonNum = Number(nextSection.dataset.season || 0);
+        const hint = document.createElement("div");
+        hint.className = "season-next-hint";
+        hint.innerHTML = `<span>Season ${seasonNum} complete!</span><button class="season-next-btn" data-next-season="${nextSeasonNum}">▶ Continue Season ${nextSeasonNum}</button>`;
+        body.appendChild(hint);
+        hint.querySelector(".season-next-btn").addEventListener("click", () => {
+          toggleSeasonSection(nextSection, detailRequestId);
+          nextSection.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
+    }
   }
 
 
@@ -1315,9 +1462,9 @@ function setupEvents() {
         </div>
       </div>
       <div class="ep-actions-wrap">
-        <button class="ep-before-btn" type="button" data-epnum="${attr(ep.number)}" title="Mark all before this watched">Before</button>
-        <button class="ep-watch-btn ${ep.watched ? "watched" : ""}" data-eid="${attr(ep.id)}" data-sid="${attr(showId)}" data-season="${attr(seasonNumber)}" title="${ep.watched ? "Unwatch" : "Watch"}">
-          ${ep.watched ? checkSVG : ""}
+        <button class="ep-before-btn" type="button" data-epnum="${attr(ep.number)}" title="Mark all previous episodes watched" aria-label="Mark all previous episodes watched">↑ All before</button>
+        <button class="ep-watch-btn ${ep.watched ? "watched" : ""}" data-eid="${attr(ep.id)}" data-sid="${attr(showId)}" data-season="${attr(seasonNumber)}" title="${ep.watched ? "Unwatch" : "Watch"}" aria-label="${ep.watched ? "Unwatch episode" : "Watch episode"}">
+          ${ep.watched ? checkSVG : playSVG}
         </button>
       </div>
     </div>
@@ -1503,7 +1650,9 @@ function setupEvents() {
       if (r?.error) throw new Error(r.error);
       const nextWatched = !was;
       btn.classList.toggle("watched");
-      btn.innerHTML = nextWatched ? checkSVG : "";
+      btn.innerHTML = nextWatched ? checkSVG : playSVG;
+      btn.title = nextWatched ? "Unwatch" : "Watch";
+      btn.setAttribute("aria-label", nextWatched ? "Unwatch episode" : "Watch episode");
       showToast(was ? "Unwatched" : "Watched!");
       syncWatchListAfterToggle(episodeId, nextWatched);
       syncUpcomingAfterToggle(episodeId, nextWatched);
@@ -1533,8 +1682,42 @@ function setupEvents() {
   }
 
   async function handleSeasonBulkAction(section, action) {
+    // Refresh: clear cache and reload
+    if (action === "refresh") {
+      const showId = section.dataset.showId;
+      const seasonNumber = Number(section.dataset.season || 0);
+      const key = seasonCacheKey(showId, seasonNumber);
+      seasonEpisodesCache.delete(key);
+      section.dataset.loaded = "false";
+      section.dataset.loading = "false";
+      await ensureSeasonEpisodesLoaded(section, detailRequestId);
+      showToast("Season refreshed");
+      return;
+    }
+
     const rows = getSeasonEpisodesFromCache(section);
     if (!rows.length) return;
+
+    // Unwatch all
+    if (action === "unwatch") {
+      const targets = rows.filter(ep => ep.watched);
+      if (!targets.length) { showToast("No watched episodes"); return; }
+      const confirmed = await showConfirmToast(`Unwatch ${targets.length} episode${targets.length > 1 ? "s" : ""}?`);
+      if (!confirmed) return;
+      const result = await markEpisodesUnwatchedBulk(targets.map(ep => ep.id), section);
+      if (!result.updatedIds.size) { showToast("No episodes updated", "error"); return; }
+      const updated = rows.map(ep => (
+        result.updatedIds.has(String(ep.id)) ? { ...ep, watched: false } : ep
+      ));
+      setSeasonEpisodesCache(section, updated);
+      renderSeasonEpisodes(section, updated);
+      for (const id of result.updatedIds) {
+        syncWatchListAfterToggle(id, false);
+        syncUpcomingAfterToggle(id, false);
+      }
+      showToast(`Unwatched ${result.updatedIds.size} episode${result.updatedIds.size > 1 ? "s" : ""}`);
+      return;
+    }
 
     let targets = [];
     if (action === "aired") {
@@ -1546,6 +1729,11 @@ function setupEvents() {
     if (!targets.length) {
       showToast("No episodes to update");
       return;
+    }
+
+    if (targets.length >= 5) {
+      const confirmed = await showConfirmToast(`Mark ${targets.length} episodes watched?`);
+      if (!confirmed) return;
     }
 
     const result = await markEpisodesWatchedBulk(targets.map(ep => ep.id), section);
@@ -1622,15 +1810,33 @@ function setupEvents() {
     if (!ids.length) return { updatedIds: new Set(), failed: 0 };
 
     setSeasonActionsDisabled(section, true);
+    const CONCURRENCY = 5;
     const updatedIds = new Set();
     let failed = 0;
-    for (const id of ids) {
-      const res = await msg({ action: "markWatched", episodeId: id });
-      if (res?.error) {
-        failed += 1;
-        continue;
-      }
-      updatedIds.add(id);
+    for (let i = 0; i < ids.length; i += CONCURRENCY) {
+      const batch = ids.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(batch.map(id => msg({ action: "markWatched", episodeId: id })));
+      results.forEach((res, idx) => {
+        if (res?.error) { failed += 1; } else { updatedIds.add(batch[idx]); }
+      });
+    }
+    setSeasonActionsDisabled(section, false);
+    return { updatedIds, failed };
+  }
+
+  async function markEpisodesUnwatchedBulk(episodeIds, section) {
+    const ids = (Array.isArray(episodeIds) ? episodeIds : []).filter(Boolean).map(id => String(id));
+    if (!ids.length) return { updatedIds: new Set(), failed: 0 };
+    setSeasonActionsDisabled(section, true);
+    const CONCURRENCY = 5;
+    const updatedIds = new Set();
+    let failed = 0;
+    for (let i = 0; i < ids.length; i += CONCURRENCY) {
+      const batch = ids.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(batch.map(id => msg({ action: "markUnwatched", episodeId: id })));
+      results.forEach((res, idx) => {
+        if (res?.error) { failed += 1; } else { updatedIds.add(batch[idx]); }
+      });
     }
     setSeasonActionsDisabled(section, false);
     return { updatedIds, failed };
@@ -1697,23 +1903,6 @@ function setupEvents() {
     } finally {
       btn.disabled = false;
     }
-  }
-
-  function updateSeasonBadge(section, watchedCount = null, totalCount = null) {
-    if (!section) return;
-    const badge = section.querySelector(".season-badge");
-    if (!badge) return;
-
-    let watched = watchedCount;
-    let total = totalCount;
-    if (watched === null || total === null) {
-      const rows = getSeasonEpisodesFromCache(section);
-      total = rows.length;
-      watched = rows.filter(ep => ep.watched).length;
-    }
-    const ratio = total ? `${watched}/${total}` : "--";
-    /* Simplified badge logic */
-    badge.textContent = ratio;
   }
 
   function saveDetailViewState() {
@@ -2068,6 +2257,26 @@ function setupEvents() {
   }
 
   // ========== HTML TEMPLATES ==========
+  function skeletonCardHTML() {
+    return `<div class="skeleton-card">
+      <div class="skeleton-poster sk-pulse"></div>
+      <div class="skeleton-info">
+        <div class="sk-line sk-pulse" style="width:60%"></div>
+        <div class="sk-line sk-pulse" style="width:40%"></div>
+        <div class="sk-line sk-pulse" style="width:30%"></div>
+      </div>
+    </div>`;
+  }
+
+  function skeletonListHTML(count = 5) {
+    return `<div class="upnext-queue">${Array.from({ length: count }, skeletonCardHTML).join("")}</div>`;
+  }
+
+  function skeletonShowsHTML(count = 8) {
+    const card = `<div class="skeleton-show-card sk-pulse"></div>`;
+    return `<div class="shows-grid">${Array.from({ length: count }, () => card).join("")}</div>`;
+  }
+
   function stateHTML(type, title, sub) {
     const icons = { loading: "", empty: "📺", error: "⚠️" };
     const safeTitle = esc(String(title || ""));
@@ -2175,17 +2384,6 @@ function setupEvents() {
         resolve({ error: e?.message || "No response" });
       }
     });
-  }
-
-  function esc(s) {
-    if (!s) return "";
-    const d = document.createElement("div");
-    d.textContent = s;
-    return d.innerHTML;
-  }
-
-  function attr(v) {
-    return esc(String(v ?? ""));
   }
 
   function safeMediaUrl(raw) {
@@ -2343,23 +2541,6 @@ function setupEvents() {
     if (!container) return;
 
     const rows = Array.isArray(episodes) ? episodes : [];
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = today.getMonth();
-
-    // Get start of the week for the first day of the month
-    const firstDayOfMonth = new Date(year, month, 1);
-    const startDay = firstDayOfMonth.getDay(); // 0 is Sunday
-    const startDate = new Date(firstDayOfMonth);
-    startDate.setDate(startDate.getDate() - startDay);
-
-    // Generate 35 days grid (5 weeks)
-    const days = [];
-    const current = new Date(startDate);
-    for (let i = 0; i < 35; i++) {
-      days.push(new Date(current));
-      current.setDate(current.getDate() + 1);
-    }
 
     // Group episodes by date key YYYY-MM-DD
     const byDate = new Map();
@@ -2371,6 +2552,32 @@ function setupEvents() {
       byDate.get(key).push(ep);
     }
 
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Find the range: from the Sunday before today to 6 weeks out (covers 2 months)
+    const startDate = new Date(today);
+    startDate.setDate(startDate.getDate() - startDate.getDay()); // Sunday of this week
+
+    // Extend grid to cover all episode dates (at least 6 weeks)
+    let endDate = new Date(startDate);
+    endDate.setDate(endDate.getDate() + 41); // 6 weeks
+    for (const key of byDate.keys()) {
+      const d = parseAirDate(key);
+      if (d && d > endDate) endDate = new Date(d);
+    }
+    // Round endDate to end of its week (Saturday)
+    endDate.setDate(endDate.getDate() + (6 - endDate.getDay()));
+
+    const days = [];
+    const current = new Date(startDate);
+    while (current <= endDate) {
+      days.push(new Date(current));
+      current.setDate(current.getDate() + 1);
+    }
+
+    // Group days into weeks for month label rows
+    let lastMonth = -1;
     const html = days.map(date => {
       const key = localDateKey(date);
       const eps = byDate.get(key) || [];
@@ -2378,35 +2585,39 @@ function setupEvents() {
       const hasEpisodes = eps.length > 0;
       const dayClasses = `calendar-day ${isToday ? "today" : ""} ${hasEpisodes ? "has-episodes" : ""}`;
 
-      const dots = eps.map(ep => {
-        const isWatched = ep.watched;
-        return `<div class="calendar-dot ${isWatched ? "watched" : "unwatched"}"></div>`;
-      }).join("");
+      let monthLabel = "";
+      if (date.getMonth() !== lastMonth && date.getDay() === 0) {
+        lastMonth = date.getMonth();
+        monthLabel = `<div class="calendar-month-label" style="grid-column:1/-1;padding:8px 4px 4px;font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">${date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>`;
+      }
+
+      const dots = eps.map(ep =>
+        `<div class="calendar-dot ${ep.watched ? "watched" : "unwatched"}" data-sid="${attr(ep.showId)}" data-sname="${esc(ep.showName)}"></div>`
+      ).join("");
 
       const detailHtml = hasEpisodes ? `
       <div class="calendar-day-detail">
         <div style="font-size:11px;font-weight:700;margin-bottom:6px;color:var(--text);border-bottom:1px solid var(--border);padding-bottom:4px;">
-          ${date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+          ${date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}
         </div>
         ${eps.map(ep => `
-          <div class="cal-ep-row">
-            <div class="cal-ep-poster"><img src="${esc(ep.poster || "icons/icon48.png")}"></div>
+          <div class="cal-ep-row" data-sid="${attr(ep.showId)}" data-sname="${esc(ep.showName)}" style="cursor:pointer;">
+            <div class="cal-ep-poster">
+              ${ep.poster ? `<img src="${esc(ep.poster)}" alt="" data-fallback="hide">` : ""}
+            </div>
             <div class="cal-ep-info">
               <div class="cal-ep-show">${esc(ep.showName)}</div>
-              <div class="cal-ep-title">${esc(ep.seasonNumber)}x${esc(ep.number)}</div>
+              <div class="cal-ep-title">S${pad(ep.seasonNumber)}E${pad(ep.number)}</div>
             </div>
           </div>
         `).join("")}
-      </div>
-    ` : "";
+      </div>` : "";
 
-      return `
-      <div class="${dayClasses}">
+      return `${monthLabel}<div class="${dayClasses}">
         <div class="calendar-date">${date.getDate()}</div>
         <div class="calendar-dots">${dots}</div>
         ${detailHtml}
-      </div>
-    `;
+      </div>`;
     }).join("");
 
     container.innerHTML = `
@@ -2421,31 +2632,37 @@ function setupEvents() {
       ${html}
     </div>
   `;
+
+    // Bind click on cal-ep-row to open show detail
+    container.querySelectorAll(".cal-ep-row[data-sid]").forEach(row => {
+      row.addEventListener("click", e => {
+        e.stopPropagation();
+        const sid = row.dataset.sid;
+        const sname = row.dataset.sname;
+        if (sid) openShowDetail(sid, sname);
+      });
+    });
+
+    bindImageFallbacks(container);
   }
 
   function updateSeasonBadge(section, watched, total) {
     if (!section) return;
-    const progressFill = section.querySelector(".season-progress-fill");
-    const badgeText = section.querySelector(".season-badge-text");
-    const headMeta = section.querySelector(".season-head-meta");
+    const remaining = Math.max(0, total - watched);
 
-    if (badgeText) badgeText.textContent = `${watched}/${total}`;
+    // Update the watched/total counter in the season header
+    const counterEl = section.querySelector(".season-counter");
+    if (counterEl) counterEl.textContent = `${watched}/${total}`;
 
-    const progress = total ? Math.round((watched / total) * 100) : 0;
-    if (progressFill) progressFill.style.width = `${progress}%`;
-
-    if (headMeta) {
-      const remaining = total - watched;
-      const progressSpan = headMeta.querySelector("span:last-child");
-      if (progressSpan) progressSpan.textContent = `${progress}%`;
-
-      const remainingSpan = headMeta.querySelector("span:first-child");
-      if (remainingSpan) {
-        if (remaining > 0) {
-          remainingSpan.innerHTML = `<span>${remaining} left</span>`;
-        } else {
-          remainingSpan.innerHTML = `<span class="season-complete-link">Completed</span>`;
-        }
+    // Update the "X left" / "Completed" label
+    const progressEl = section.querySelector(".season-progress");
+    if (progressEl) {
+      if (remaining > 0) {
+        progressEl.textContent = `${remaining} left`;
+        progressEl.style.color = "";
+      } else {
+        progressEl.textContent = "Completed";
+        progressEl.style.color = "var(--success)";
       }
     }
   }
