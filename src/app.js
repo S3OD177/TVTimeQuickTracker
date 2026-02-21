@@ -96,6 +96,7 @@ function pickPoster(entity) {
     entity.image,
     entity.show_poster,
     entity.poster_path, // TMDB/TMS
+    entity.still_path,  // TMDB Episode Still
     entity.image_url,
     entity.poster_url,
     entity.imageUrl,
@@ -107,7 +108,11 @@ function pickPoster(entity) {
     entity.all_images?.cover,
     entity.images?.image,
     entity.all_images?.image,
+    entity.images?.still,
+    entity.all_images?.still,
+    entity.still,
     entity.all_images,
+    entity.image_path,
     entity.artwork,
     entity.cover,
     entity.logo,
@@ -1182,43 +1187,51 @@ function renderShowHero(hero, details, showName, stats) {
     timeStr = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
   }
 
-  // IMMERSIVE LAYOUT HTML
+  // PREMIUM TRACKTV LAYOUT HTML
   let html = `
-    <div class="simple-hero">
-       <div class="simple-hero-poster">
-         ${poster ? `<img src="${poster}" alt="Poster" data-fallback="poster-fallback">` : ""}
-         <div class="simple-hero-placeholder" ${poster ? 'style="display:none"' : ""}>📺</div>
-       </div>
-       <div class="simple-hero-info">
-         <div class="simple-show-title">${esc(displayName)}</div>
-         
-         <div class="simple-meta-row">
-           ${year ? `<span class="simple-stat-badge">${year}</span>` : ""}
-           ${status ? `<span class="simple-stat-badge">${esc(status)}</span>` : ""}
-           ${rating > 0 ? `<span class="simple-stat-badge">★ ${rating.toFixed(1)}</span>` : ""}
-         </div>
-
-         <div class="simple-meta-row" style="margin-bottom:16px;">
-            ${genres.length ? genres.slice(0, 3).map(g => `<span class="simple-stat-badge" style="background:rgba(255,255,255,0.05)">${esc(g)}</span>`).join("") : ""}
-         </div>
-
-         <div class="simple-meta-row">
-            <span style="color:#4ade80;font-weight:700">${progressValue}% Watched</span>
-            <span style="color:rgba(255,255,255,0.3)">•</span>
-            <span>${watchedEpisodes} / ${totalEpisodes} eps</span>
-       </div>
-     </div>
-    </div>
-    
-    <div class="hero-overview-section">
-      ${details.overview ? `
-        <div class="overview-glass">
-           <span class="overview-text">${esc(details.overview).substring(0, 180)}${details.overview.length > 180 ? "..." : ""}</span>
-           ${details.overview.length > 180 ? `<div style="display:none" class="overview-full">${esc(details.overview)}</div><button class="overview-toggle">Read more</button>` : ""}
+    <div class="premium-hero">
+      <div class="hero-backdrop">
+        <img src="${fanart || poster}" alt="Backdrop" data-fallback="fanart-fallback">
+        <div class="hero-gradient-top"></div>
+        <div class="hero-gradient-bottom"></div>
+      </div>
+      
+      <div class="hero-main">
+        <div class="hero-meta-badges">
+          ${status ? `<span class="hero-badge">${esc(status)}</span>` : ""}
+          <span class="hero-badge hero-badge--secondary">${seasonCount} Seasons</span>
         </div>
-      ` : ""}
+        
+        <h1 class="hero-title">${esc(displayName)}</h1>
+        
+        <div class="hero-sub-meta">
+          <span>${year}</span>
+          <span class="dot"></span>
+          <span>${esc(network)}</span>
+          <span class="dot"></span>
+          <span class="rating">
+            <span class="material-symbols-outlined" style="font-size:16px; font-variation-settings:'FILL' 1">star</span>
+            ${rating > 0 ? rating.toFixed(1) : "N/A"}
+          </span>
+        </div>
+
+        <p class="hero-overview">${esc(details.overview || "")}</p>
+
+        <div class="hero-actions">
+           <button class="btn-primary" id="hero-resume-btn">
+             <span class="material-symbols-outlined">play_arrow</span>
+             <span>Resume</span>
+           </button>
+           <button class="btn-icon-only">
+             <span class="material-symbols-outlined">add</span>
+           </button>
+           <button class="btn-icon-only">
+             <span class="material-symbols-outlined">share</span>
+           </button>
+        </div>
+      </div>
     </div>
-    `;
+  `;
 
   hero.innerHTML = html;
   bindImageFallbacks(hero);
@@ -1258,26 +1271,20 @@ function buildSeasonShellHTML(showId, season, expanded) {
   const remaining = Math.max(0, total - watched);
   const isCompleted = total > 0 && remaining === 0;
 
-  // The checkSVG is already constructed above in global scope or accessible.
-  // Actually, wait, checkSVG isn't defined globally, it's inside renderers.js. 
-  // Let's use a pure inline SVG here to avoid reference errors.
-  const tickSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>';
-
   return `
-    <div class="season-section" data-show-id="${attr(showId)}" data-season="${seasonNumber}" data-seen-hint="${Math.max(0, watched)}" data-loaded="false" data-loading="false" data-filter="all">
-      <div class="season-header ${expanded ? "expanded" : ""}">
-        <div class="season-title-row">
-            <span class="season-title">Season ${seasonNumber}</span>
-            ${remaining > 0 ? `<span class="season-progress">${remaining} left</span>` : '<span class="season-progress" style="color:var(--success)">Completed</span>'}
+    <div class="season-section-v2 season-section" data-show-id="${attr(showId)}" data-season="${seasonNumber}" data-seen-hint="${Math.max(0, watched)}" data-loaded="false" data-loading="false" data-filter="all">
+      <div class="season-header-v2 season-header ${expanded ? "expanded" : ""}">
+        <div class="season-num-badge ${isCompleted ? 'completed' : ''}">${seasonNumber}</div>
+        <div class="season-info-v2">
+          <div class="season-name-v2">Season ${seasonNumber}</div>
+          <div class="season-stats-v2">${watched} of ${total} eps • ${progress}% watched</div>
         </div>
-        <div class="season-header-actions">
-            <div style="font-size:11px;color:rgba(255,255,255,0.4)">${watched}/${total}</div>
-            <button class="season-watch-btn ${isCompleted ? 'watched' : ''}" data-season-num="${seasonNumber}" aria-label="Mark Season as Watched">${tickSvg}</button>
-            <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        <div class="season-progress-v2">
+          <div class="progress-bar-v2">
+            <div class="progress-bar-fill-v2" style="width: ${progress}%"></div>
+          </div>
         </div>
       </div>
-      
-      <!-- No progress pill, using text instead -->
       
       <div class="season-episodes ${expanded ? "" : "collapsed"}">
         <div class="season-placeholder">${expanded ? "Loading episodes..." : "Expand to load episodes"}</div>
@@ -1487,36 +1494,33 @@ function seasonEpisodeRowHTML(ep, showId, seasonNumber) {
   // Avoid "E01 Episode 1" redundancy
   const showEpNum = !epTitle.toLowerCase().includes(`episode ${ep.number}`);
 
-
-
   return `
-    <div class="ep-row ${ep.watched ? "watched" : ""}">
-      <div class="ep-thumb ${ep.thumbnail ? "" : "ep-thumb--ghost"}">
-        ${ep.thumbnail
-      ? `<img src="${ep.thumbnail}" alt="" data-fallback="thumb-fallback" loading="lazy">`
-      : `<span class="ep-ghost-label">${epNumLabel}</span>`}
+    <div class="ep-row-v2 ep-row ${ep.watched ? "watched" : ""}">
+      <div class="ep-thumb-container">
+        ${ep.poster
+      ? `<img src="${ep.poster}" alt="" data-fallback="thumb-fallback" loading="lazy">`
+      : `<div style="width:100%;height:100%;background:rgba(255,255,255,0.05);display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.2)">E${epNumLabel}</div>`}
+        ${ep.watched ? "" : `<div class="ep-play-overlay"><span class="material-symbols-outlined" style="font-size:32px;color:#fff;">play_circle</span></div>`}
       </div>
-      <div class="ep-main">
-        <div class="ep-top-row">
-          ${showEpNum ? `<span class="ep-number">E${epNumLabel}</span>` : ""}
-          <span class="ep-name">${esc(epTitle)}</span>
+      <div class="ep-details-v2">
+        <div class="ep-heading-v2">
+          <div class="ep-name-v2">${showEpNum ? `<span class="code">E${epNumLabel}</span> ` : ""}${esc(epTitle)}</div>
+          <button class="ep-watch-v2 ep-watch-btn ${ep.watched ? "watched" : ""}" 
+                  data-eid="${attr(ep.id)}" 
+                  data-sid="${attr(showId)}" 
+                  data-season="${attr(seasonNumber)}" 
+                  title="${ep.watched ? "Unwatch" : "Watch"}">
+            <span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1">${ep.watched ? 'check_circle' : 'radio_button_unchecked'}</span>
+          </button>
         </div>
-        <div class="ep-sub-row">
-          ${airDate ? `<span class="ep-date">${airDate}</span>` : ""}
+        <div class="ep-meta-v2">
+          ${airDate ? `<span>${airDate}</span>` : ""}
           ${airStatusBadgeHTML(ep.airDate)}
         </div>
+        ${ep.overview ? `<div class="ep-desc-v2">${esc(ep.overview)}</div>` : `<div class="ep-desc-v2" style="color:var(--text-muted);font-style:italic">No description available.</div>`}
       </div>
-      <div class="ep-actions-wrap">
-        <button class="ep-before-btn" type="button" data-epnum="${attr(ep.number)}" title="Mark all before this watched" aria-label="Mark all before Episode ${ep.number} as watched">Before</button>
-        <button class="ep-watch-btn ${ep.watched ? "watched" : ""}" 
-                data-eid="${attr(ep.id)}" 
-                data-sid="${attr(showId)}" 
-                data-season="${attr(seasonNumber)}" 
-                title="${ep.watched ? "Unwatch" : "Watch"}"
-                aria-label="${ep.watched ? "Mark Episode " + ep.number + " as unwatched" : "Mark Episode " + ep.number + " as watched"}"
-                aria-pressed="${ep.watched ? "true" : "false"}">
-          ${ep.watched ? checkSVG : ""}
-        </button>
+      <div class="ep-actions-wrap" style="display:none;">
+        <button class="ep-before-btn" type="button" data-epnum="${attr(ep.number)}">Before</button>
       </div>
     </div>
   `;

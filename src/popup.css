@@ -35,6 +35,13 @@
   --hover: rgba(255, 255, 255, 0.06);
 }
 
+.glass-panel {
+  background: rgba(22, 46, 33, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -46,7 +53,7 @@ body {
   height: 580px;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Spline Sans', -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 13px;
   line-height: 1.5;
   overflow: hidden;
@@ -421,8 +428,13 @@ body {
 
 /* ============ SKELETON LOADING ============ */
 @keyframes sk-shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
 }
 
 .sk-pulse {
@@ -1235,7 +1247,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
   transition: opacity 0.2s, transform 0.2s;
   z-index: 20;
 }
@@ -1517,14 +1529,351 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding-bottom: 30px;
+  padding-bottom: 100px;
+}
+
+.premium-hero {
+  position: relative;
+  width: 100%;
+  min-height: 400px;
+  /* Reduced for popup height constraints */
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.hero-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 380px;
+  overflow: hidden;
+}
+
+.hero-backdrop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.6;
+}
+
+.hero-gradient-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 120px;
+  background: linear-gradient(to bottom, var(--bg) 0%, transparent 100%);
+}
+
+.hero-gradient-bottom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 250px;
+  background: linear-gradient(to top, var(--bg) 15%, transparent 100%);
+}
+
+.hero-main {
+  position: relative;
+  padding: 80px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 400px;
+}
+
+.hero-meta-badges {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.hero-badge {
+  background: var(--accent);
+  color: var(--bg);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.hero-badge--secondary {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.hero-title {
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 1.1;
+  margin-bottom: 8px;
+  letter-spacing: -0.5px;
+  color: #fff;
+}
+
+.hero-sub-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+.hero-sub-meta .dot {
+  width: 4px;
+  height: 4px;
+  background: var(--text-muted);
+  border-radius: 50%;
+}
+
+.hero-sub-meta .rating {
+  color: var(--accent);
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hero-overview {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 20px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--bg);
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-weight: 800;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: transform 0.2s;
+}
+
+.btn-primary:active {
+  transform: scale(0.95);
+}
+
+.btn-icon-only {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+}
+
+/* Season Section */
+.season-section-v2 {
+  margin: 20px 16px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.season-header-v2 {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.season-header-v2:hover {
+  background: var(--bg-card-hover);
+}
+
+.season-num-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.season-num-badge.completed {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.season-info-v2 {
+  flex: 1;
+}
+
+.season-name-v2 {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.season-stats-v2 {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.season-progress-v2 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100px;
+}
+
+.progress-bar-v2 {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar-fill-v2 {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+/* Episode Card V2 (Premium) */
+.ep-row-v2 {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.ep-row-v2:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ep-thumb-container {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+}
+
+.ep-thumb-container img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.8;
+  transition: opacity 0.3s;
+}
+
+.ep-row-v2:hover .ep-thumb-container img {
+  opacity: 1;
+}
+
+.ep-play-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.ep-row-v2:hover .ep-play-overlay {
+  opacity: 1;
+}
+
+.ep-details-v2 {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ep-heading-v2 {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.ep-name-v2 {
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff;
+}
+
+.ep-meta-v2 {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  gap: 8px;
+}
+
+.ep-meta-v2 .code {
+  color: var(--accent);
+  font-family: monospace;
+}
+
+.ep-desc-v2 {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ep-watch-v2 {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.ep-watch-v2.watched {
+  color: var(--accent);
+}
+
+.ep-watch-v2:hover {
+  color: var(--accent);
 }
 
 /* Immersive Hero */
 /* Simple Hero */
 .simple-hero {
-  padding: 80px 20px 20px;
-  /* 80px top to clear fixed header */
+  padding: 85px 20px 24px;
+  /* Slightly increased padding */
   display: flex;
   gap: 20px;
   background: linear-gradient(to bottom, rgba(20, 22, 30, 0.5), transparent);
@@ -1780,7 +2129,8 @@ body {
   flex: 1;
   overflow: visible;
   /* Let the parent handle scrolling */
-  padding: 0 12px 12px;
+  padding: 0 12px 60px;
+  /* Added 60px bottom padding */
   margin-top: 0;
 }
 
@@ -2095,14 +2445,15 @@ body {
 /* Episode rows */
 .ep-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  /* Changed from flex-start to center */
   gap: 12px;
-  padding: 12px 14px;
+  padding: 10px 14px;
+  /* Slightly reduced vertical padding */
   border-bottom: 1px solid var(--border);
   transition: background 0.15s;
   position: relative;
   border-left: 3px solid transparent;
-  /* Accent placeholder */
 }
 
 .ep-row:hover {

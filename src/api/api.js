@@ -232,8 +232,9 @@ function extractSeasonEpisodes(data) {
     id: ep.id || ep.episode_id,
     number: ep.number || ep.episode_number || 0,
     name: ep.name || ep.title || "",
+    overview: ep.overview || ep.description || ep.summary || "",
     airDate: ep.air_date || ep.aired || ep.first_aired || ep.first_aired_date || ep.release_date || "",
-    thumbnail: purl(ep),
+    poster: purl(ep),
     watched: Boolean(
       ep.watched ||
       ep.is_watched ||
