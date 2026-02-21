@@ -20,14 +20,7 @@ The extension processes:
 
 ## Network Requests
 
-The extension sends requests only to the following service domains:
-
-- `https://api2.tozelabs.com/*`
-- `https://search.tvtime.com/*`
-- `https://msearch.tvtime.com/*`
-- `https://artworks.thetvdb.com/*`
-
-These requests are required to authenticate users and fetch/update TV tracking data and artwork.
+The extension sends requests only to the minimum required third-party services needed for core functionality, such as authentication, show/episode data retrieval, and artwork display.
 
 ## Data Sharing
 

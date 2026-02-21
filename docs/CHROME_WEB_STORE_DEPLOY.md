@@ -80,10 +80,7 @@ If users are asked to log in again after update, verify:
 ## 6. Permission Justification Text (for review form)
 
 - `storage`: store local auth/session and cached UI data for fast popup load.
-- Host permissions:
-  - `api2.tozelabs.com`: TV Time account APIs.
-  - `search.tvtime.com` and `msearch.tvtime.com`: show search.
-  - `artworks.thetvdb.com`: show artwork loading.
+- Host permissions: limited to the minimum required service endpoints used for authentication, search, account data retrieval, episode state updates, and artwork loading.
 
 ## 7. Release Process for Each Version
 
