@@ -34,6 +34,20 @@
 
 // ========== DATA EXTRACTION ==========
 
+function isEpisodeWatched(ep) {
+  if (!ep || typeof ep !== "object") return false;
+  if (ep.watched || ep.is_watched || ep.is_seen) return true;
+  if (ep.seen === true || ep.seen === 1 || ep.seen === "1") return true;
+  const progress = ep.user_progress || ep.userProgress;
+  if (progress?.watched || progress?.seen || progress?.viewed) return true;
+  const user = ep.user || ep.user_state || ep.userState;
+  if (user?.watched || user?.is_watched || user?.is_seen || user?.seen || user?.viewed) return true;
+  if (typeof ep.seen_date === "string" && ep.seen_date.trim()) return true;
+  if (typeof ep.watched_at === "string" && ep.watched_at.trim()) return true;
+  if (typeof ep.viewed_at === "string" && ep.viewed_at.trim()) return true;
+  return false;
+}
+
 /**
  * Safely extracts episodes from an untyped API response
  * @param {any} data - Raw API payload
@@ -67,18 +81,7 @@ function extractEpisodes(data) {
       ep.airing_time ||
       "",
     toWatchCategory: ep.to_watch_category || ep.toWatchCategory || "",
-    watched: Boolean(
-      ep.watched ||
-      ep.is_watched ||
-      ep.is_seen ||
-      ep.seen === true ||
-      ep.seen === 1 ||
-      ep.seen === "1" ||
-      ep.user_progress?.watched ||
-      ep.user_progress?.seen ||
-      ep.user_progress?.viewed ||
-      ep.seen_date
-    ),
+    watched: isEpisodeWatched(ep),
   }));
 }
 
@@ -239,18 +242,7 @@ function extractSeasonEpisodes(data) {
     overview: ep.overview || ep.description || ep.summary || "",
     airDate: ep.air_date || ep.aired || ep.first_aired || ep.first_aired_date || ep.release_date || "",
     poster: purl(ep),
-    watched: Boolean(
-      ep.watched ||
-      ep.is_watched ||
-      ep.is_seen ||
-      ep.seen === true ||
-      ep.seen === 1 ||
-      ep.seen === "1" ||
-      ep.user_progress?.watched ||
-      ep.user_progress?.seen ||
-      ep.user_progress?.viewed ||
-      ep.seen_date
-    ),
+    watched: isEpisodeWatched(ep),
   }));
 }
 

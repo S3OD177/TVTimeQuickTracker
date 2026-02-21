@@ -863,9 +863,29 @@ function episodeIsWatched(ep) {
   if (!ep || typeof ep !== "object") return false;
   if (ep.watched || ep.is_watched || ep.is_seen) return true;
   if (ep.seen === true || ep.seen === 1 || ep.seen === "1") return true;
-  if (ep.user_progress?.watched || ep.user_progress?.seen || ep.user_progress?.viewed) return true;
+  const progress = ep.user_progress || ep.userProgress;
+  if (progress?.watched || progress?.seen || progress?.viewed) return true;
+  const user = ep.user || ep.user_state || ep.userState;
+  if (user?.watched || user?.is_watched || user?.is_seen || user?.seen || user?.viewed) return true;
   if (typeof ep.seen_date === "string" && ep.seen_date.trim()) return true;
   if (typeof ep.watched_at === "string" && ep.watched_at.trim()) return true;
+  if (typeof ep.viewed_at === "string" && ep.viewed_at.trim()) return true;
+  return false;
+}
+
+function episodeHasWatchField(ep) {
+  if (!ep || typeof ep !== "object") return false;
+  if ("watched" in ep || "is_watched" in ep || "is_seen" in ep || "seen" in ep) return true;
+  if ("seen_date" in ep || "watched_at" in ep || "viewed_at" in ep) return true;
+  const progress = ep.user_progress || ep.userProgress;
+  if (progress && typeof progress === "object") {
+    if ("watched" in progress || "seen" in progress || "viewed" in progress || "seen_date" in progress) return true;
+  }
+  const user = ep.user || ep.user_state || ep.userState;
+  if (user && typeof user === "object") {
+    if ("watched" in user || "is_watched" in user || "is_seen" in user || "seen" in user || "viewed" in user) return true;
+    if ("seen_date" in user || "watched_at" in user || "viewed_at" in user) return true;
+  }
   return false;
 }
 
@@ -1481,6 +1501,8 @@ async function getShowAllEpisodes(showId) {
       }
     }
 
+    const hasWatchFields = allEpisodes.some(episodeHasWatchField);
+
     // Group episodes by season
     const episodesBySeason = {};
     const seasonMeta = new Map();
@@ -1513,21 +1535,40 @@ async function getShowAllEpisodes(showId) {
         seen_episodes: meta.watched,
       }));
 
-    return { seasons, episodesBySeason };
+    return { seasons, episodesBySeason, hasWatchFields };
   });
 }
 
-async function getShowSeasons(id) {
+async function getShowSeasons(id, opts = {}) {
   const a = await getAuth();
   if (!a) throw new Error("NOT_LOGGED_IN");
 
+  const minSeasons = Math.max(0, Number(opts.minSeasons || 0));
+  let force = Boolean(opts.forceRefresh || opts.noCache);
   const cacheKey = `show-seasons:${id}`;
-  return withCachedResponse({ key: cacheKey, ttlMs: SEASONS_CACHE_TTL_MS }, async () => {
+
+  if (!force && minSeasons > 0) {
+    const cached = getCachedResponse(cacheKey, SEASONS_CACHE_TTL_MS);
+    if (cached && !cached.error && Array.isArray(cached.seasons) && cached.seasons.length >= minSeasons) {
+      return { ...cached, cached: true };
+    }
+    force = true;
+  }
+
+  return withCachedResponse({ key: cacheKey, ttlMs: SEASONS_CACHE_TTL_MS, force }, async () => {
     // Try the fast all-episodes path first — derives seasons from episode data
+    let fallbackSeasons = [];
     try {
       const result = await getShowAllEpisodes(id);
-      if (result.seasons?.length > 0) {
+      if (
+        result.seasons?.length > 0 &&
+        result.hasWatchFields &&
+        (!minSeasons || result.seasons.length >= minSeasons)
+      ) {
         return { seasons: result.seasons };
+      }
+      if (result.seasons?.length > 0) {
+        fallbackSeasons = result.seasons;
       }
     } catch (e) {
       if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
@@ -1543,12 +1584,18 @@ async function getShowSeasons(id) {
       try {
         const d = await req(ep, { timeout: 10000 });
         const seasons = normalizeSeasons(d);
-        if (seasons?.length) return { seasons };
+        if (seasons?.length && (!minSeasons || seasons.length >= minSeasons)) {
+          return { seasons };
+        }
+        if (seasons?.length && seasons.length > fallbackSeasons.length) {
+          fallbackSeasons = seasons;
+        }
       } catch (e) {
         if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
       }
     }
 
+    if (fallbackSeasons.length) return { seasons: fallbackSeasons };
     return { seasons: [] };
   });
 }
@@ -1567,6 +1614,12 @@ async function getSeasonEpisodes(showId, seasonNum) {
       const all = await getShowAllEpisodes(showId);
       if (all.episodesBySeason && all.episodesBySeason[n]?.length) {
         let episodes = all.episodesBySeason[n];
+        const hasWatchFields = typeof all.hasWatchFields === "boolean"
+          ? all.hasWatchFields
+          : episodes.some(episodeHasWatchField);
+        if (!hasWatchFields) {
+          throw new Error("MISSING_WATCH_FIELDS");
+        }
 
         // Apply show poster to episodes missing one
         try {
@@ -1677,6 +1730,35 @@ async function searchShows(query) {
 
   const q = encodeURIComponent(query);
 
+  const tagFollowing = async results => {
+    if (!Array.isArray(results) || results.length === 0) return results;
+    try {
+      const showsResult = await getWatchingShows();
+      const followedIds = new Set(
+        (showsResult.shows || [])
+          .map(s => showId(s))
+          .filter(Boolean)
+          .map(id => String(id))
+      );
+      if (!followedIds.size) return results;
+
+      for (const item of results) {
+        const candidateId =
+          showId(item) ||
+          showId(item?.show) ||
+          showId(item?.series) ||
+          showId(item?.tv_show) ||
+          showId(item?.content);
+        if (candidateId && followedIds.has(String(candidateId))) {
+          item.following = true;
+          item.is_following = true;
+          item.is_followed = true;
+        }
+      }
+    } catch { /* ignore follow tagging failures */ }
+    return results;
+  };
+
   // 1) TV Time search microservice (global shows/movies search)
   try {
     const authHeaders = authHeadersForRequest(a);
@@ -1697,7 +1779,10 @@ async function searchShows(query) {
           const d = await r.json();
           if (d?.status === "fail" || d?.status === "error") continue;
           const arr = pickSearchResults(d);
-          if (arr.length > 0) return { results: arr, remote: "search-service" };
+          if (arr.length > 0) {
+            await tagFollowing(arr);
+            return { results: arr, remote: "search-service" };
+          }
         }
       }
     }
@@ -1714,7 +1799,10 @@ async function searchShows(query) {
       if (!r.ok) continue;
       const d = await r.json();
       const arr = pickSearchResults(d);
-      if (arr.length > 0) return { results: arr, remote: "msearch" };
+      if (arr.length > 0) {
+        await tagFollowing(arr);
+        return { results: arr, remote: "msearch" };
+      }
     }
   } catch { }
 
@@ -1729,7 +1817,10 @@ async function searchShows(query) {
       const d = await req(ep);
       if (d && d.code !== 404 && d.result !== "KO") {
         const arr = pickSearchResults(d);
-        if (arr.length > 0) return { results: arr, remote: "api" };
+        if (arr.length > 0) {
+          await tagFollowing(arr);
+          return { results: arr, remote: "api" };
+        }
       }
     } catch (e) {
       if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
@@ -1818,7 +1909,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case "getUpNext": return await getUpNext();
         case "getShowDetails": return await getShowDetails(request.showId);
         case "getShowAllEpisodes": return await getShowAllEpisodes(request.showId);
-        case "getShowSeasons": return await getShowSeasons(request.showId);
+        case "getShowSeasons": return await getShowSeasons(request.showId, request);
         case "getSeasonEpisodes": return await getSeasonEpisodes(request.showId, request.seasonNumber);
         case "markWatched": return await markWatched(request.episodeId);
         case "markUnwatched": return await markUnwatched(request.episodeId);

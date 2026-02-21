@@ -691,6 +691,19 @@ function normalizeToWatchCategory(value) {
   return normalized;
 }
 
+function expectedSeasonCountFromDetails(details = {}) {
+  const values = [
+    details.season_count,
+    details.seasons_count,
+    details.nb_seasons,
+    details.number_of_seasons,
+    details.total_seasons,
+    Array.isArray(details.seasons) ? details.seasons.length : 0,
+    Array.isArray(details.show?.seasons) ? details.show.seasons.length : 0,
+  ];
+  return Math.max(0, ...values.map(v => Number(v) || 0));
+}
+
 
 
 
@@ -948,10 +961,28 @@ async function openShowDetail(showId, showName) {
       return checkAuthAndRoute();
     }
 
-    const seasons = extractSeasons(seasonsData);
+    let seasons = extractSeasons(seasonsData);
+    const expectedSeasonCount = expectedSeasonCountFromDetails(details);
+    if (expectedSeasonCount > 0 && seasons.length < expectedSeasonCount) {
+      try {
+        const refreshed = await msg({
+          action: "getShowSeasons",
+          showId,
+          minSeasons: expectedSeasonCount,
+          forceRefresh: true,
+        });
+        if (requestId !== detailRequestId) return;
+        if (!refreshed?.error) {
+          const refreshedSeasons = extractSeasons(refreshed);
+          if (refreshedSeasons.length >= seasons.length) {
+            seasons = refreshedSeasons;
+          }
+        }
+      } catch { /* keep initial seasons */ }
+    }
     const seasonNumbers = seasons.map(season => Number(season.number) || 0).filter(Boolean);
     const nextEpisode = extractNextEpisode(details, seasonsData);
-    const seasonCount = seasons.length || details?.season_count || 0;
+    const seasonCount = seasons.length || expectedSeasonCount || details?.season_count || 0;
     const totalEpisodes = seasons.reduce((sum, season) => sum + (Number(season.episodeCount) || 0), 0);
     const watchedEpisodes = seasons.reduce((sum, season) => sum + (Number(season.watchedCount) || 0), 0);
     renderShowHero(hero, details || {}, showName, {
@@ -1016,6 +1047,9 @@ async function openShowDetail(showId, showName) {
     if (initialSection) {
       await ensureSeasonEpisodesLoaded(initialSection, requestId);
     }
+
+    // Load episodes for all seasons in the background so stats are complete.
+    loadAllSeasonEpisodes(content, requestId);
 
     if (saved && Number.isFinite(saved.scrollTop)) {
       requestAnimationFrame(() => {
@@ -1266,6 +1300,18 @@ async function ensureSeasonEpisodesLoaded(section, requestId = detailRequestId) 
   } finally {
     section.dataset.loading = "false";
   }
+}
+
+function loadAllSeasonEpisodes(content, requestId = detailRequestId) {
+  const sections = Array.from(content?.querySelectorAll?.(".season-section") || []);
+  if (!sections.length) return;
+
+  (async () => {
+    for (const section of sections) {
+      if (requestId !== detailRequestId) return;
+      await ensureSeasonEpisodesLoaded(section, requestId);
+    }
+  })();
 }
 
 function renderSeasonEpisodes(section, episodes) {
