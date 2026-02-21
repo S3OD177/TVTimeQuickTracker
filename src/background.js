@@ -49,6 +49,8 @@ const inflightResponseCache = new Map();
 const WATCHLIST_CACHE_TTL_MS = 45 * 1000;
 const UPCOMING_CACHE_TTL_MS = 45 * 1000;
 const WATCHING_SHOWS_CACHE_TTL_MS = 90 * 1000;
+const SEASONS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const SEASON_EPISODES_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
 const DEBUG_LOGS = false;
 
 function logDebug(...args) {
@@ -254,13 +256,36 @@ function isLikelyPlaceholderPoster(url) {
   return (
     s.includes("/default-images/") ||
     s.includes("placeholder") ||
-    s.includes("default") ||
+    s.includes("/default-") ||
     s.includes("landscape-default") ||
     s.includes("noimage") ||
     s.includes("no-image") ||
     s.includes("missing") ||
     s.includes("notfound")
   );
+}
+
+function safeMediaUrl(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("http")) return trimmed;
+
+  try {
+    const absolute = trimmed.startsWith("//") ? `https:${trimmed}` :
+      (trimmed.startsWith("/") ? trimmed : `/${trimmed}`);
+
+    // Prioritize TV Time CDN
+    let base = "https://statics.tvtime.com/";
+    if (absolute.includes("banners/")) {
+      base = "https://artworks.thetvdb.com/";
+    }
+
+    const url = new URL(absolute, base);
+    return url.href;
+  } catch {
+    return "";
+  }
 }
 
 function normalizePosterToken(url) {
@@ -395,13 +420,24 @@ function mediaUrlFromCandidate(candidate, depth = 0) {
   }
   if (typeof candidate !== "object") return "";
 
-  const direct = [candidate.url, candidate.href, candidate.src, candidate.path, candidate.file];
+  const direct = [
+    candidate.url,
+    candidate.href,
+    candidate.src,
+    candidate.path,
+    candidate.file,
+    candidate.filename,
+    candidate.still,
+    candidate.screenshot,
+    candidate.thumb,
+    candidate.thumbnail,
+  ];
   for (const v of direct) {
     if (typeof v === "string" && v.trim()) return v.trim();
   }
 
   const versions = candidate.versions || {};
-  for (const v of [versions.medium, versions.small, versions.big, versions.original]) {
+  for (const v of [versions.medium, versions.small, versions.big, versions.original, candidate.medium, candidate.small, candidate.big]) {
     if (typeof v === "string" && v.trim()) return v.trim();
   }
 
@@ -434,8 +470,46 @@ function mediaUrlFromCandidate(candidate, depth = 0) {
 function pickPoster(entity) {
   if (!entity || typeof entity !== "object") return "";
   const candidates = [
+    entity.poster,
+    entity.image,
+    entity.filename,
+    entity.screenshot,
+    entity.still,
+    entity.thumb,
+    entity.thumbnail,
+    entity.poster_image,
+    entity.post_image,
+    entity.poster_path,
+    entity.image_path,
+
+    entity.images?.poster,
+    entity.images?.poster_image,
+    entity.images?.filename,
+    entity.images?.image,
+    entity.images?.still,
+    entity.images?.screenshot,
+    entity.images,
+
+    entity.all_images?.poster,
+    entity.all_images?.poster_image,
+    entity.all_images?.filename,
+    entity.all_images?.image,
+    entity.all_images?.still,
+    entity.all_images,
+
+    entity.show_poster,
+    entity.poster_path,
+    entity.still_path,
+    entity.image_url,
+    entity.poster_url,
+    entity.cover_url,
+    entity.show_image,
+    entity.artwork,
+    entity.cover,
+
     entity.show?.poster,
     entity.show?.image,
+    entity.show?.poster_image,
     entity.show?.cover,
     entity.show?.artwork,
     entity.show?.images?.poster,
@@ -444,28 +518,16 @@ function pickPoster(entity) {
     entity.show?.all_images?.cover,
     entity.show?.all_images,
     entity.show,
-    entity.poster,
-    entity.image,
-    entity.cover,
-    entity.artwork,
-    entity.banner,
-    entity.poster_url,
-    entity.image_url,
-    entity.cover_url,
-    entity.show_poster,
-    entity.show_image,
-    entity.images?.poster,
-    entity.images?.cover,
-    entity.images?.image,
-    entity.all_images?.poster,
-    entity.all_images?.cover,
-    entity.all_images,
   ];
 
   let placeholder = "";
   for (const candidate of candidates) {
-    const url = mediaUrlFromCandidate(candidate);
+    const rawUrl = mediaUrlFromCandidate(candidate);
+    if (!rawUrl) continue;
+
+    const url = safeMediaUrl(rawUrl);
     if (!url) continue;
+
     if (!isLikelyPlaceholderPoster(url)) return url;
     if (!placeholder) placeholder = url;
   }
@@ -812,7 +874,7 @@ async function enrichEpisodesWithDetails(episodes) {
     const id = encodeURIComponent(rawId);
     try {
       const details = await req(
-        `/episode/${id}?fields=id,episode_id,name,title,number,episode_number,season_number,is_watched,seen,seen_date`,
+        `/episode/${id}?fields=id,episode_id,name,title,number,episode_number,season_number,is_watched,seen,seen_date,air_date,images,poster_image,screenshot,still`,
         { timeout: 9000 }
       );
       if (!details || typeof details !== "object" || details.result === "KO") return;
@@ -1306,7 +1368,7 @@ async function getShowDetails(id) {
   if (!sid) return { error: "not_found" };
   if (showDetailsCache.has(sid)) return showDetailsCache.get(sid);
 
-  for (const ep of [`/show/${sid}`, `/series/${sid}`]) {
+  for (const ep of [`/show/${sid}?fields=id,name,title,images,poster_image`, `/series/${sid}?fields=id,name,title,images,poster_image`]) {
     try {
       const d = await req(ep);
       if (d?.id && d.result !== "KO") {
@@ -1327,22 +1389,26 @@ async function getShowSeasons(id) {
   const a = await getAuth();
   if (!a) throw new Error("NOT_LOGGED_IN");
 
-  const endpoints = [
-    `/user/${a.uid}/show/${id}/seasons`,
-    `/user/${a.uid}/series/${id}/seasons`,
-    `/user/${a.uid}/shows/${id}/seasons`,
-    `/user/${a.uid}/show/${id}`,
-    `/user/${a.uid}/series/${id}`,
-    `/show/${id}/seasons`,
-    `/series/${id}/seasons`,
-    `/show/${id}`,
-    `/series/${id}`,
-  ];
+  const cacheKey = `show-seasons:${id}`;
+  return withCachedResponse({ key: cacheKey, ttlMs: SEASONS_CACHE_TTL_MS }, async () => {
+    const endpoints = [
+      `/user/${a.uid}/show/${id}/seasons`,
+      `/user/${a.uid}/series/${id}/seasons`,
+      `/user/${a.uid}/shows/${id}/seasons`,
+      `/user/${a.uid}/show/${id}`,
+      `/user/${a.uid}/series/${id}`,
+      `/show/${id}/seasons`,
+      `/series/${id}/seasons`,
+      `/show/${id}`,
+      `/series/${id}`,
+    ];
 
-  const bySeason = new Map();
-  for (const ep of endpoints) {
-    try {
-      const d = await req(ep);
+    const bySeason = new Map();
+    const settled = await Promise.allSettled(endpoints.map(ep => req(ep)));
+
+    for (const res of settled) {
+      if (res.status !== "fulfilled" || !res.value) continue;
+      const d = res.value;
       const seasons = normalizeSeasons(d);
       if (!seasons?.length) continue;
       for (const season of seasons) {
@@ -1354,7 +1420,6 @@ async function getShowSeasons(id) {
           ...season,
           number: num,
           season_number: num,
-          // Keep the best progress signal seen across endpoints.
           seen_episodes: Math.max(
             parsePositiveInt(prev.seen_episodes, 0),
             parsePositiveInt(season.seen_episodes, 0)
@@ -1365,14 +1430,11 @@ async function getShowSeasons(id) {
           ),
         });
       }
-    } catch (e) {
-      if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
     }
-  }
 
-  const seasons = Array.from(bySeason.values())
-    .sort((a, b) => a.number - b.number);
-  return { seasons };
+    const seasons = Array.from(bySeason.values()).sort((a, b) => a.number - b.number);
+    return { seasons };
+  });
 }
 
 async function getSeasonEpisodes(showId, seasonNum) {
@@ -1382,40 +1444,43 @@ async function getSeasonEpisodes(showId, seasonNum) {
   const n = parsePositiveInt(seasonNum, 0);
   if (!n) return { episodes: [] };
 
-  const endpoints = [
-    `/user/${a.uid}/show/${showId}/season/${n}/episodes`,
-    `/user/${a.uid}/series/${showId}/season/${n}/episodes`,
-    `/user/${a.uid}/show/${showId}/seasons/${n}/episodes`,
-    `/user/${a.uid}/series/${showId}/seasons/${n}/episodes`,
-    `/user/${a.uid}/shows/${showId}/season/${n}/episodes`,
-    `/user/${a.uid}/shows/${showId}/seasons/${n}/episodes`,
-    `/user/${a.uid}/show/${showId}/episodes`,
-    `/user/${a.uid}/series/${showId}/episodes`,
-    `/user/${a.uid}/shows/${showId}/episodes`,
-    `/user/${a.uid}/show/${showId}/episodes?season=${n}`,
-    `/user/${a.uid}/series/${showId}/episodes?season=${n}`,
-    `/user/${a.uid}/shows/${showId}/episodes?season=${n}`,
-    `/user/${a.uid}/show/${showId}?fields=seasons.limit(-1)`,
-    `/user/${a.uid}/series/${showId}?fields=seasons.limit(-1)`,
-    `/show/${showId}/season/${n}/episodes`,
-    `/series/${showId}/season/${n}/episodes`,
-    `/show/${showId}/seasons/${n}/episodes`,
-    `/series/${showId}/seasons/${n}/episodes`,
-    `/show/${showId}/season/${n}/episodes?fields=episodes.fields(id,episode_id,name,title,number,episode_number,season_number,air_date,is_watched,seen,seen_date)`,
-    `/series/${showId}/season/${n}/episodes?fields=episodes.fields(id,episode_id,name,title,number,episode_number,season_number,air_date,is_watched,seen,seen_date)`,
-    `/show/${showId}/season/${n}`,
-    `/series/${showId}/season/${n}`,
-    `/show/${showId}`,
-    `/series/${showId}`,
-  ];
+  const cacheKey = `season-episodes:${showId}:${n}`;
+  return withCachedResponse({ key: cacheKey, ttlMs: SEASON_EPISODES_CACHE_TTL_MS }, async () => {
+    const endpoints = [
+      `/user/${a.uid}/show/${showId}/season/${n}/episodes`,
+      `/user/${a.uid}/series/${showId}/season/${n}/episodes`,
+      `/user/${a.uid}/show/${showId}/seasons/${n}/episodes`,
+      `/user/${a.uid}/series/${showId}/seasons/${n}/episodes`,
+      `/user/${a.uid}/shows/${showId}/season/${n}/episodes`,
+      `/user/${a.uid}/shows/${showId}/seasons/${n}/episodes`,
+      `/user/${a.uid}/show/${showId}/episodes`,
+      `/user/${a.uid}/series/${showId}/episodes`,
+      `/user/${a.uid}/shows/${showId}/episodes`,
+      `/user/${a.uid}/show/${showId}/episodes?season=${n}`,
+      `/user/${a.uid}/series/${showId}/episodes?season=${n}`,
+      `/user/${a.uid}/shows/${showId}/episodes?season=${n}`,
+      `/user/${a.uid}/show/${showId}?fields=seasons.limit(-1)`,
+      `/user/${a.uid}/series/${showId}?fields=seasons.limit(-1)`,
+      `/show/${showId}/season/${n}/episodes`,
+      `/series/${showId}/season/${n}/episodes`,
+      `/show/${showId}/seasons/${n}/episodes`,
+      `/series/${showId}/seasons/${n}/episodes`,
+      `/show/${showId}/season/${n}/episodes?fields=episodes.fields(id,episode_id,name,title,number,episode_number,season_number,air_date,is_watched,seen,seen_date,images,poster_image,screenshot,still)`,
+      `/series/${showId}/season/${n}/episodes?fields=episodes.fields(id,episode_id,name,title,number,episode_number,season_number,air_date,is_watched,seen,seen_date,images,poster_image,screenshot,still)`,
+      `/show/${showId}/season/${n}`,
+      `/series/${showId}/season/${n}`,
+      `/show/${showId}`,
+      `/series/${showId}`,
+    ];
 
-  const byEpisode = new Map();
-  for (const ep of endpoints) {
-    try {
-      const d = await req(ep);
+    const byEpisode = new Map();
+    const settled = await Promise.allSettled(endpoints.map(ep => req(ep)));
+
+    for (const res of settled) {
+      if (res.status !== "fulfilled" || !res.value) continue;
+      const d = res.value;
       let episodes = episodesFromSeasonPayload(d, n);
 
-      // Some endpoints return whole-show episode arrays.
       if (!episodes.length) {
         const allEpisodes = normalizeEpisodeList(d);
         if (allEpisodes.length) {
@@ -1433,17 +1498,38 @@ async function getSeasonEpisodes(showId, seasonNum) {
         const prev = byEpisode.get(key) || {};
         byEpisode.set(key, mergeEpisode(prev, item, n));
       }
-    } catch (e) {
-      if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
     }
-  }
 
-  let merged = Array.from(byEpisode.values())
-    .sort((a, b) => parsePositiveInt(a.number ?? a.episode_number, 0) - parsePositiveInt(b.number ?? b.episode_number, 0));
-  if (merged.length > 0) {
-    merged = await enrichEpisodesWithDetails(merged);
-  }
-  return { episodes: merged };
+    let merged = Array.from(byEpisode.values())
+      .sort((a, b) => parsePositiveInt(a.number ?? a.episode_number, 0) - parsePositiveInt(b.number ?? b.episode_number, 0));
+
+    if (merged.length > 0) {
+      merged = await enrichEpisodesWithDetails(merged);
+
+      try {
+        const showDetails = await getShowDetails(showId);
+        if (showDetails && showDetails.result !== "KO") {
+          const showPoster = pickPoster(showDetails);
+          const showName = showDetails.name || showDetails.title || "";
+          merged.forEach(ep => {
+            if (!ep.poster || isLikelyPlaceholderPoster(ep.poster)) {
+              const current = pickPoster(ep);
+              if (!current || isLikelyPlaceholderPoster(current)) {
+                ep.poster = showPoster;
+              } else {
+                ep.poster = current;
+              }
+            }
+            if (!ep.show_name) ep.show_name = showName;
+          });
+        }
+      } catch (e) {
+        logDebug(`[TV] show fallback fetch failed for season episodes: ${e.message}`);
+      }
+    }
+
+    return { episodes: merged };
+  });
 }
 
 // ========== EPISODE ACTIONS ==========

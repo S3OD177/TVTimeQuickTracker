@@ -232,6 +232,28 @@ body {
   transform: translateY(0);
 }
 
+.btn-icon-only.active,
+.btn-icon-only.following {
+  background: var(--success);
+  color: #fff;
+  border-color: var(--success);
+}
+
+.highlight-flash {
+  animation: highlight-flash-anim 2s ease;
+}
+
+@keyframes highlight-flash-anim {
+  0% {
+    background-color: rgba(245, 197, 24, 0.4);
+  }
+
+  100% {
+    background-color: transparent;
+  }
+}
+
+.btn-icon-only:disabled,
 .btn-primary:disabled {
   opacity: 0.6;
   cursor: default;
@@ -1654,12 +1676,15 @@ body {
 .hero-actions {
   display: flex;
   gap: 10px;
+  flex-wrap: nowrap;
+  align-items: center;
 }
 
 .btn-primary {
   background: var(--accent);
   color: var(--bg);
-  padding: 10px 20px;
+  height: 44px;
+  padding: 0 20px;
   border-radius: 8px;
   font-weight: 800;
   border: none;
@@ -1668,6 +1693,7 @@ body {
   align-items: center;
   gap: 8px;
   transition: transform 0.2s;
+  white-space: nowrap;
 }
 
 .btn-primary:active {
@@ -1764,108 +1790,254 @@ body {
 }
 
 /* Episode Card V2 (Premium) */
+/* Episode Card V2 (Horizontal Redesign) */
 .ep-row-v2 {
-  padding: 16px;
+  padding: 12px 16px;
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 16px;
   border-top: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.2);
+  width: 100%;
+  box-sizing: border-box;
+  transition: background 0.2s;
 }
 
 .ep-row-v2:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.03);
 }
 
-.ep-thumb-container {
+.ep-thumb-container-v2 {
   position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  border-radius: 8px;
+  width: 100px;
+  height: 56px;
+  /* 16:9 aspect ratio */
+  border-radius: 6px;
   overflow: hidden;
   background: #000;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.ep-thumb-container img {
+.ep-thumb-container-v2 img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  opacity: 0.8;
+  display: block;
+  opacity: 0.85;
   transition: opacity 0.3s;
 }
 
-.ep-row-v2:hover .ep-thumb-container img {
+.ep-thumb-fallback-text {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-darker);
+}
+
+.ep-row-v2:hover .ep-thumb-container-v2 img {
   opacity: 1;
 }
 
-.ep-play-overlay {
+.ep-thumb-placeholder {
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.2);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ep-play-overlay-v2 {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.2);
   opacity: 0;
   transition: opacity 0.2s;
 }
 
-.ep-row-v2:hover .ep-play-overlay {
+.ep-row-v2:hover .ep-play-overlay-v2 {
   opacity: 1;
 }
 
-.ep-details-v2 {
+.ep-content-v2 {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.ep-heading-v2 {
+.ep-main-v2 {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 12px;
+}
+
+.ep-info-v2 {
+  flex: 1;
+  min-width: 0;
 }
 
 .ep-name-v2 {
   font-weight: 700;
   font-size: 14px;
   color: #fff;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.ep-num-v2 {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  margin-right: 4px;
 }
 
 .ep-meta-v2 {
   font-size: 11px;
   color: var(--text-muted);
   display: flex;
+  align-items: center;
   gap: 8px;
-}
-
-.ep-meta-v2 .code {
-  color: var(--accent);
-  font-family: monospace;
+  margin-top: 2px;
 }
 
 .ep-desc-v2 {
   font-size: 12px;
   color: var(--text-secondary);
-  line-height: 1.4;
+  line-height: 1.5;
+  margin-top: 4px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  opacity: 0.8;
 }
 
 .ep-watch-v2 {
   background: transparent;
-  border: none;
+  border: 1px solid var(--border-light);
+  border-radius: 50%;
   color: var(--text-muted);
   cursor: pointer;
-  transition: color 0.2s;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-top: -4px;
+}
+
+.ep-watch-v2 svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 3;
+}
+
+.ep-watch-v2:not(.watched) svg {
+  padding-left: 2px;
+  /* Visual centering for the triangle */
 }
 
 .ep-watch-v2.watched {
-  color: var(--accent);
+  color: var(--success);
+  border-color: var(--success);
+  background: rgba(52, 211, 153, 0.05);
 }
 
 .ep-watch-v2:hover {
+  color: var(--success);
+  border-color: var(--success);
+  transform: scale(1.1);
+}
+
+/* Season Controls (Search & Filter) */
+.season-controls {
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.15);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.season-search-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.season-search-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 10px 40px 10px 16px;
+  color: #fff;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.season-search-input:focus {
+  outline: none;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(245, 197, 24, 0.1);
+}
+
+.search-icon {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  font-size: 20px;
+  pointer-events: none;
+}
+
+.season-filter-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.season-filter-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.season-filter-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.season-filter-btn.active {
+  background: rgba(245, 197, 24, 0.1);
+  border-color: var(--accent);
   color: var(--accent);
 }
 
@@ -2256,7 +2428,7 @@ body {
 
 .season-episodes {
   overflow: hidden;
-  max-height: 2000px;
+  max-height: 10000px;
   transition: max-height 0.35s ease, opacity 0.25s ease;
   opacity: 1;
   background: #13161f;

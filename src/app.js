@@ -33,118 +33,17 @@ function safeMediaUrl(raw) {
     const absolute = trimmed.startsWith("//") ? `https:${trimmed}` :
       (trimmed.startsWith("/") ? trimmed : `/${trimmed}`);
 
-    // Default to TVDB artworks host if it's a path
-    const url = new URL(absolute, "https://artworks.thetvdb.com/");
+    // TV Time images can be on either TVDB or their own statics host
+    let base = "https://artworks.thetvdb.com/";
+    if (absolute.includes("/nb_episodes/") || absolute.includes("/show-") || !absolute.includes("banners/")) {
+      base = "https://statics.tvtime.com/";
+    }
+
+    const url = new URL(absolute, base);
     return url.href;
   } catch {
     return "";
   }
-}
-
-/**
- * Checks if a URL is a known placeholder image pattern
- * @param {string} url - URL to check
- * @returns {boolean} - True if it's a known generic placeholder
- */
-function isPlaceholderMediaUrl(url) {
-  const s = String(url || "").toLowerCase();
-  if (!s) return true;
-  return (
-    s.startsWith("data:image/") ||
-    s.includes("/default-images/") ||
-    s.includes("placeholder") ||
-    s.includes("landscape-default") ||
-    s.includes("noimage") ||
-    s.includes("no-image")
-  );
-}
-
-/**
- * Deep search to extract a URL string from a nested object or array
- * @param {any} c - Candidate object, array, or string
- * @param {number} depth - Recursion safeguard
- * @returns {string} - Extracted URL
- */
-function mediaUrlFromCandidate(c, depth = 0) {
-  if (!c || depth > 3) return "";
-  if (typeof c === "string") return c.trim();
-  if (Array.isArray(c)) return mediaUrlFromCandidate(c[0], depth + 1);
-  if (typeof c !== "object") return "";
-  return (
-    c.url ||
-    c.href ||
-    c.src ||
-    c.path ||
-    c.file ||
-    mediaUrlFromCandidate(c.versions?.medium || c.versions?.original, depth + 1) ||
-    mediaUrlFromCandidate(c.poster || c.image || c.cover, depth + 1) ||
-    ""
-  );
-}
-
-/**
- * Tries all common TV Time API JSON paths to find the best valid poster image
- * @param {object} entity - Unknown JSON object from API
- * @returns {string} - Best valid poster URL found
- */
-function pickPoster(entity) {
-  if (!entity) return "";
-  if (typeof entity === "string") return safeMediaUrl(entity);
-
-  const candidates = [
-    entity.poster,
-    entity.image,
-    entity.show_poster,
-    entity.poster_path, // TMDB/TMS
-    entity.still_path,  // TMDB Episode Still
-    entity.image_url,
-    entity.poster_url,
-    entity.imageUrl,
-    entity.thumb,
-    entity.thumbnail,
-    entity.images?.poster,
-    entity.all_images?.poster,
-    entity.images?.cover,
-    entity.all_images?.cover,
-    entity.images?.image,
-    entity.all_images?.image,
-    entity.images?.still,
-    entity.all_images?.still,
-    entity.still,
-    entity.all_images,
-    entity.image_path,
-    entity.artwork,
-    entity.cover,
-    entity.logo,
-    entity.show?.poster,
-    entity.show?.image,
-    entity.show?.cover,
-    entity.show?.all_images,
-  ];
-
-  let placeholder = "";
-  for (const c of candidates) {
-    const rawUrl = mediaUrlFromCandidate(c);
-    if (!rawUrl || typeof rawUrl !== "string") continue;
-
-    const url = safeMediaUrl(rawUrl);
-    if (!url) continue;
-
-    if (!isPlaceholderMediaUrl(url)) return url;
-    if (!placeholder) placeholder = url;
-  }
-  return placeholder || "";
-}
-
-/**
- * Main entry point for resolving an entity's poster safely
- * @param {string|object} raw - String URL or entity object
- * @returns {string} - Safest poster URL
- */
-function purl(raw) {
-  if (!raw) return "";
-  if (typeof raw === "object") return pickPoster(raw);
-  return safeMediaUrl(raw);
 }
 
 
@@ -1026,15 +925,14 @@ async function openShowDetail(showId, showName) {
     }
 
     // Check "Watch List" cache
-    if (!cachedPoster && upNextCache) {
-      const s2 = upNextCache.find(x => String(x.showId || x.show_id) === sidStr);
-      if (s2) {
-        if (s2.poster) cachedPoster = s2.poster;
-        if (s2.name && !cachedName) cachedName = s2.name;
-      }
+    const s2 = (upNextCache || []).find(x => String(x.showId || x.show_id) === sidStr);
+    if (!cachedPoster && s2) {
+      if (s2.poster) cachedPoster = s2.poster;
+      if (s2.name && !cachedName) cachedName = s2.name;
     }
 
     const details = { ...d1, ...d2 };
+    details.following = !!(s1 || s2);
 
     // STRICT PRIORITY: If we have a cached poster, USE IT.
     if (cachedPoster) {
@@ -1218,14 +1116,16 @@ function renderShowHero(hero, details, showName, stats) {
         <p class="hero-overview">${esc(details.overview || "")}</p>
 
         <div class="hero-actions">
-           <button class="btn-primary" id="hero-resume-btn">
+           <button class="btn-primary" id="hero-resume-btn" 
+                   data-next-season="${stats.nextEpisode?.seasonNumber || ""}" 
+                   data-next-number="${stats.nextEpisode?.number || ""}">
              <span class="material-symbols-outlined">play_arrow</span>
-             <span>Resume</span>
+             <span>Watch Next</span>
            </button>
-           <button class="btn-icon-only">
-             <span class="material-symbols-outlined">add</span>
+           <button class="btn-icon-only ${details.following ? "active following" : ""}" id="hero-follow-btn">
+             <span class="material-symbols-outlined">${details.following ? "check" : "add"}</span>
            </button>
-           <button class="btn-icon-only">
+           <button class="btn-icon-only" id="hero-share-btn" data-share-url="https://www.tvtime.com/show/${details.id}">
              <span class="material-symbols-outlined">share</span>
            </button>
         </div>
@@ -1397,7 +1297,7 @@ function renderSeasonEpisodes(section, episodes) {
       <div class="season-controls">
         <div class="season-search-bar">
           <input type="text" class="season-search-input" placeholder="Search episode..." value="${esc(section.dataset.searchTerm || "")}">
-          <span class="search-icon">🔍</span>
+          <span class="material-symbols-outlined search-icon">search</span>
         </div>
         <div class="season-filter-row">
           ${seasonFilterButtonHTML("all", "All", filter)}
@@ -1495,30 +1395,36 @@ function seasonEpisodeRowHTML(ep, showId, seasonNumber) {
   const showEpNum = !epTitle.toLowerCase().includes(`episode ${ep.number}`);
 
   return `
-    <div class="ep-row-v2 ep-row ${ep.watched ? "watched" : ""}">
-      <div class="ep-thumb-container">
+    <div class="ep-row-v2 ep-row ${ep.watched ? "watched" : ""}" data-eid="${attr(ep.id)}">
+      <div class="ep-thumb-container-v2">
         ${ep.poster
       ? `<img src="${ep.poster}" alt="" data-fallback="thumb-fallback" loading="lazy">`
-      : `<div style="width:100%;height:100%;background:rgba(255,255,255,0.05);display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.2)">E${epNumLabel}</div>`}
-        ${ep.watched ? "" : `<div class="ep-play-overlay"><span class="material-symbols-outlined" style="font-size:32px;color:#fff;">play_circle</span></div>`}
+      : `<div class="ep-thumb-placeholder">E${epNumLabel}</div>`}
+        ${ep.watched ? "" : `<div class="ep-play-overlay-v2"><span class="material-symbols-outlined">play_arrow</span></div>`}
       </div>
-      <div class="ep-details-v2">
-        <div class="ep-heading-v2">
-          <div class="ep-name-v2">${showEpNum ? `<span class="code">E${epNumLabel}</span> ` : ""}${esc(epTitle)}</div>
+      
+      <div class="ep-content-v2">
+        <div class="ep-main-v2">
+          <div class="ep-info-v2">
+            <div class="ep-name-v2">${showEpNum ? `<span class="ep-num-v2">E${epNumLabel}</span> ` : ""}${esc(epTitle)}</div>
+            <div class="ep-meta-v2">
+              ${airDate ? `<span>${airDate}</span>` : ""}
+              ${airStatusBadgeHTML(ep.airDate)}
+            </div>
+          </div>
+          
           <button class="ep-watch-v2 ep-watch-btn ${ep.watched ? "watched" : ""}" 
                   data-eid="${attr(ep.id)}" 
                   data-sid="${attr(showId)}" 
                   data-season="${attr(seasonNumber)}" 
                   title="${ep.watched ? "Unwatch" : "Watch"}">
-            <span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1">${ep.watched ? 'check_circle' : 'radio_button_unchecked'}</span>
+            ${ep.watched ? checkSVG : playSVG}
           </button>
         </div>
-        <div class="ep-meta-v2">
-          ${airDate ? `<span>${airDate}</span>` : ""}
-          ${airStatusBadgeHTML(ep.airDate)}
-        </div>
-        ${ep.overview ? `<div class="ep-desc-v2">${esc(ep.overview)}</div>` : `<div class="ep-desc-v2" style="color:var(--text-muted);font-style:italic">No description available.</div>`}
+        
+        ${ep.overview ? `<div class="ep-desc-v2">${esc(ep.overview)}</div>` : ""}
       </div>
+      
       <div class="ep-actions-wrap" style="display:none;">
         <button class="ep-before-btn" type="button" data-epnum="${attr(ep.number)}">Before</button>
       </div>
@@ -1706,7 +1612,7 @@ async function toggleEpWatch(btn, episodeId, section = null) {
     if (r?.error) throw new Error(r.error);
     const nextWatched = !was;
     btn.classList.toggle("watched");
-    btn.innerHTML = nextWatched ? checkSVG : "";
+    btn.innerHTML = nextWatched ? checkSVG : playSVG;
     showToast(was ? "Unwatched" : "Watched!");
     syncWatchListAfterToggle(episodeId, nextWatched);
     syncUpcomingAfterToggle(episodeId, nextWatched);
@@ -1861,12 +1767,83 @@ function setSeasonActionsDisabled(section, disabled) {
 
 function bindDetailHeroActions(hero, showId) {
   if (!hero) return;
-  hero.querySelectorAll(".detail-next-btn").forEach(btn =>
-    btn.addEventListener("click", e => {
-      e.stopPropagation();
-      handleDetailNextEpisodeAction(btn, showId);
-    })
-  );
+
+  // 1. Resume / Watch Next button
+  const resumeBtn = hero.querySelector("#hero-resume-btn");
+  if (resumeBtn) {
+    resumeBtn.addEventListener("click", () => {
+      const s = resumeBtn.dataset.nextSeason;
+      const n = resumeBtn.dataset.nextNumber;
+      if (!s) {
+        showToast("All caught up!");
+        return;
+      }
+
+      // Look for the season section first
+      const container = document.querySelector("#detail-content");
+      const section = container?.querySelector(`.season-section[data-season="${s}"]`);
+      if (section) {
+        // Expand if collapsed
+        const body = section.querySelector(".season-episodes");
+        if (body?.classList.contains("collapsed")) {
+          const header = section.querySelector(".season-header");
+          header?.click();
+        }
+
+        // Scroll to it
+        section.scrollIntoView({ behavior: "smooth", block: "start" });
+
+        // Find the specific episode row if possible
+        setTimeout(() => {
+          const epRow = section.querySelector(`.ep-row[data-epnum="${n}"]`);
+          if (epRow) {
+            epRow.classList.add("highlight-flash");
+            setTimeout(() => epRow.classList.remove("highlight-flash"), 2000);
+          }
+        }, 400);
+      } else {
+        showToast(`Next is Season ${s} Episode ${n}`);
+      }
+    });
+  }
+
+  // 2. Follow / Add button
+  const followBtn = hero.querySelector("#hero-follow-btn");
+  if (followBtn) {
+    followBtn.addEventListener("click", async () => {
+      const isFollowing = followBtn.classList.contains("following");
+      followBtn.disabled = true;
+      try {
+        const res = await msg({ action: isFollowing ? "unfollowShow" : "followShow", showId });
+        if (res?.error) throw new Error(res.error);
+
+        followBtn.classList.toggle("following");
+        followBtn.classList.toggle("active");
+        const icon = followBtn.querySelector(".material-symbols-outlined");
+        if (icon) icon.textContent = followBtn.classList.contains("following") ? "check" : "add";
+
+        showToast(isFollowing ? "Removed from watchlist" : "Added to watchlist!");
+        // Refresh watchlist in background if visible
+        renderWatchListQueue();
+      } catch (e) {
+        showToast("Error updating watchlist");
+      } finally {
+        followBtn.disabled = false;
+      }
+    });
+  }
+
+  // 3. Share button
+  const shareBtn = hero.querySelector("#hero-share-btn");
+  if (shareBtn) {
+    shareBtn.addEventListener("click", () => {
+      const url = shareBtn.dataset.shareUrl;
+      if (url) {
+        navigator.clipboard.writeText(url);
+        showToast("Link copied to clipboard!");
+      }
+    });
+  }
 }
 
 async function handleDetailNextEpisodeAction(btn, showId) {
@@ -1926,10 +1903,11 @@ function updateSeasonBadge(section, watchedCount = null, totalCount = null) {
     watched = rows.filter(ep => ep.watched).length;
   }
 
+  const progress = total ? Math.round((Math.min(watched, total) / total) * 100) : 0;
   const remaining = Math.max(0, total - watched);
   const isCompleted = total > 0 && remaining === 0;
 
-  // 1. Update the 'X left' / 'Completed' tag
+  // 1. Update the 'X left' / 'Completed' tag (v1)
   const progressText = section.querySelector(".season-progress");
   if (progressText) {
     if (remaining > 0) {
@@ -1941,16 +1919,36 @@ function updateSeasonBadge(section, watchedCount = null, totalCount = null) {
     }
   }
 
-  // 2. Update the fraction text (first div inside season-header-actions)
+  // 2. Update the fraction text (v1)
   const fractionDiv = section.querySelector(".season-header-actions > div");
   if (fractionDiv) {
     fractionDiv.textContent = `${watched}/${total}`;
   }
 
-  // 3. Update the Season Watch checkmark button
+  // 3. Update the Season Watch checkmark button (v1)
   const watchBtn = section.querySelector(".season-watch-btn");
   if (watchBtn) {
     watchBtn.classList.toggle("watched", isCompleted);
+  }
+
+  // --- V2 UI Updates ---
+
+  // 4. Update the stats text (v2)
+  const statsV2 = section.querySelector(".season-stats-v2");
+  if (statsV2) {
+    statsV2.textContent = `${watched} of ${total} eps • ${progress}% watched`;
+  }
+
+  // 5. Update the progress bar (v2)
+  const fillV2 = section.querySelector(".progress-bar-fill-v2");
+  if (fillV2) {
+    fillV2.style.width = `${progress}%`;
+  }
+
+  // 6. Update the number badge (v2)
+  const badgeV2 = section.querySelector(".season-num-badge");
+  if (badgeV2) {
+    badgeV2.classList.toggle("completed", isCompleted);
   }
 }
 
@@ -2070,9 +2068,12 @@ function bindImageFallbacks(root) {
         return;
       }
       if (mode === "thumb-fallback") {
-        if (img.parentElement) {
-          img.parentElement.textContent = "EP";
-        }
+        img.style.display = "none";
+        const placeholder = document.createElement("div");
+        placeholder.className = "ep-thumb-fallback-text";
+        placeholder.textContent = "EP";
+        img.after(placeholder);
+        return;
       }
     };
 

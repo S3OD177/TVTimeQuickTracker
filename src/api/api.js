@@ -249,6 +249,100 @@ function extractSeasonEpisodes(data) {
   }));
 }
 
+function parseSeasonNum(val, fallback = 0) {
+  const n = parseInt(val, 10);
+  return isNaN(n) ? fallback : n;
+}
+
+function purl(raw) {
+  if (!raw) return "";
+  if (typeof raw === "object") return pickPoster(raw);
+  return safeMediaUrl(raw);
+}
+
+function safeMediaUrl(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("http")) return trimmed;
+
+  try {
+    const absolute = trimmed.startsWith("//") ? `https:${trimmed}` :
+      (trimmed.startsWith("/") ? trimmed : `/${trimmed}`);
+
+    // Prioritize TV Time CDN
+    let base = "https://statics.tvtime.com/";
+    // TVDB is usually only for legacy banner paths
+    if (absolute.includes("banners/")) {
+      base = "https://artworks.thetvdb.com/";
+    }
+
+    const url = new URL(absolute, base);
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+function pickPoster(entity) {
+  if (!entity) return "";
+  if (typeof entity === "string") return safeMediaUrl(entity);
+
+  const candidates = [
+    entity.poster,
+    entity.image,
+    entity.filename,
+    entity.screenshot,
+    entity.still,
+    entity.thumb,
+    entity.thumbnail,
+    entity.poster_image,
+    entity.post_image,
+    entity.poster_path,
+    entity.image_path,
+    entity.images?.poster,
+    entity.images?.poster_image,
+    entity.images?.filename,
+    entity.images?.image,
+    entity.images?.still,
+    entity.images?.screenshot,
+    entity.images,
+    entity.all_images?.poster,
+    entity.all_images?.poster_image,
+    entity.show_poster,
+    entity.image_url,
+    entity.poster_url,
+    entity.show?.poster,
+    entity.show?.image,
+    entity.show?.poster_image,
+    entity.show,
+  ];
+
+  for (const c of candidates) {
+    const url = mediaUrlFromCandidate(c);
+    if (url && typeof url === "string" && !isPlaceholderMediaUrl(url)) {
+      return safeMediaUrl(url);
+    }
+  }
+  return "";
+}
+
+function mediaUrlFromCandidate(c, depth = 0) {
+  if (!c || depth > 3) return "";
+  if (typeof c === "string") return c.trim();
+  if (Array.isArray(c)) return mediaUrlFromCandidate(c[0], depth + 1);
+  if (typeof c !== "object") return "";
+  return (
+    c.url || c.href || c.src || c.path || c.file || c.filename || c.screenshot || c.still ||
+    mediaUrlFromCandidate(c.versions?.medium || c.versions?.original || c.poster || c.image || c.artwork, depth + 1)
+  );
+}
+
+function isPlaceholderMediaUrl(url) {
+  const s = String(url || "").toLowerCase();
+  if (!s) return true;
+  return s.includes("/default-images/") || s.includes("placeholder") || s.includes("/default-");
+}
 
 // ========== UTILS ==========
 function msg(data) {
