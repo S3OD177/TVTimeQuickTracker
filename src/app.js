@@ -1996,12 +1996,16 @@ function extractNextEpisode(...sources) {
       seasonNumber: item.season_number || item.season?.number || item.season || 0,
       airDate: item.air_date || item.aired || "",
       watched: Boolean(
-        item.is_watched ||
-        item.seen ||
         item.watched ||
+        item.is_watched ||
+        item.is_seen ||
+        item.seen === true ||
+        item.seen === 1 ||
+        item.seen === "1" ||
         item.user_progress?.watched ||
         item.user_progress?.seen ||
-        item.user_progress?.viewed
+        item.user_progress?.viewed ||
+        item.seen_date
       ),
     };
   }

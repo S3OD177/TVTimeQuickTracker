@@ -74,6 +74,9 @@ function extractEpisodes(data) {
       ep.seen === true ||
       ep.seen === 1 ||
       ep.seen === "1" ||
+      ep.user_progress?.watched ||
+      ep.user_progress?.seen ||
+      ep.user_progress?.viewed ||
       ep.seen_date
     ),
   }));
@@ -210,6 +213,7 @@ function extractSeasons(data) {
         Number(s.user_progress?.seen_count) || 0,
         Number(s.user_progress?.viewed_count) || 0,
         Number(s.user_progress?.seen) || 0,
+        Number(s.user_progress?.viewed) || 0,
       );
       return {
         number: parseSeasonNum(s.number || s.season_number, i + 1),
@@ -242,9 +246,10 @@ function extractSeasonEpisodes(data) {
       ep.seen === true ||
       ep.seen === 1 ||
       ep.seen === "1" ||
-      ep.seen_date ||
       ep.user_progress?.watched ||
-      ep.user_progress?.seen
+      ep.user_progress?.seen ||
+      ep.user_progress?.viewed ||
+      ep.seen_date
     ),
   }));
 }

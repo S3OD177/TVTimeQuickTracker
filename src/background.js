@@ -1,5 +1,6 @@
-// TV Time Quick Tracker - Background SW v5
+// TV Time Quick Tracker - Background SW v6
 const API = "https://api2.tozelabs.com/v2";
+const MSAPI = "https://msapi.tvtime.com";
 const SEARCH_API = "https://search.tvtime.com/v1/search";
 const SEARCH_API_KEY = "LhqxB7GE9a95beFHqiNC85GHdrX8hNi34H2uQ7QG";
 const AUTH_KEYS = ["auth", "uid", "bearer"];
@@ -46,11 +47,12 @@ const showNamePosterCache = new Map();
 const seasonProbePosterCache = new Map();
 const responseCache = new Map();
 const inflightResponseCache = new Map();
-const WATCHLIST_CACHE_TTL_MS = 45 * 1000;
-const UPCOMING_CACHE_TTL_MS = 45 * 1000;
-const WATCHING_SHOWS_CACHE_TTL_MS = 90 * 1000;
-const SEASONS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const SEASON_EPISODES_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
+const WATCHLIST_CACHE_TTL_MS = 120 * 1000; // 2 minutes
+const UPCOMING_CACHE_TTL_MS = 120 * 1000;
+const WATCHING_SHOWS_CACHE_TTL_MS = 120 * 1000;
+const SEASONS_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const SEASON_EPISODES_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const ALL_EPISODES_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const DEBUG_LOGS = false;
 
 function logDebug(...args) {
@@ -112,10 +114,13 @@ async function withCachedResponse({ key, ttlMs, force }, fetcher) {
 }
 
 function fetchT(url, opts = {}, ms = 15000) {
-  return Promise.race([
-    fetch(url, opts),
-    new Promise((_, r) => setTimeout(() => r(new Error("TIMEOUT")), ms)),
-  ]);
+  const { signal: externalSignal, ...rest } = opts;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  if (externalSignal) {
+    externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  return fetch(url, { ...rest, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
 function basicH(u, p) {
@@ -187,6 +192,7 @@ async function req(path, opts = {}) {
     method = "GET",
     headers = {},
     forceBasic = false,
+    noAuthClear = false,
     ...fetchOpts
   } = opts;
 
@@ -219,12 +225,19 @@ async function req(path, opts = {}) {
       continue;
     }
     if (r.status === 401 || r.status === 403) {
+      // noAuthClear: don't wipe credentials when trying alternate endpoints (e.g. msapi)
+      if (noAuthClear) {
+        throw new Error("AUTH_REJECTED");
+      }
       await clearAuthStorage();
       throw new Error("AUTH_EXPIRED");
     }
     return parseJSON(txt);
   }
 
+  if (noAuthClear) {
+    throw new Error("AUTH_REJECTED");
+  }
   await clearAuthStorage();
   throw new Error("AUTH_EXPIRED");
 }
@@ -285,6 +298,31 @@ function safeMediaUrl(raw) {
     return url.href;
   } catch {
     return "";
+  }
+}
+
+/**
+ * Build a resized image URL via the TV Time image proxy.
+ * @param {string} rawUrl - Full or relative image URL
+ * @param {number} w - Target width
+ * @param {number} h - Target height
+ * @returns {string} Resized image URL, or rawUrl if input is invalid
+ */
+function resizedImageUrl(rawUrl, w = 88, h = 120) {
+  if (!rawUrl || typeof rawUrl !== "string") return rawUrl || "";
+  try {
+    const full = rawUrl.startsWith("http") ? rawUrl : safeMediaUrl(rawUrl);
+    if (!full) return rawUrl;
+    const url = new URL(full);
+    const key = `${url.host}${url.pathname}`;
+    const payload = JSON.stringify({
+      bucket: "tvtime-platform-resize-images",
+      key,
+      edits: { resize: { fit: "cover", width: w, height: h } },
+    });
+    return `${MSAPI}/prod/v1/image/raw/${btoa(payload)}`;
+  } catch {
+    return rawUrl;
   }
 }
 
@@ -823,8 +861,9 @@ function episodeKey(ep, fallbackSeason = 0) {
 
 function episodeIsWatched(ep) {
   if (!ep || typeof ep !== "object") return false;
-  if (ep.watched === true || ep.is_watched === true || ep.is_seen === true) return true;
+  if (ep.watched || ep.is_watched || ep.is_seen) return true;
   if (ep.seen === true || ep.seen === 1 || ep.seen === "1") return true;
+  if (ep.user_progress?.watched || ep.user_progress?.seen || ep.user_progress?.viewed) return true;
   if (typeof ep.seen_date === "string" && ep.seen_date.trim()) return true;
   if (typeof ep.watched_at === "string" && ep.watched_at.trim()) return true;
   return false;
@@ -1368,6 +1407,24 @@ async function getShowDetails(id) {
   if (!sid) return { error: "not_found" };
   if (showDetailsCache.has(sid)) return showDetailsCache.get(sid);
 
+  // Try the confirmed msapi endpoint first (from official web app)
+  try {
+    const d = await req(`${MSAPI}/v1/series/${sid}`, { timeout: 10000, noAuthClear: true });
+    if (d && typeof d === "object" && !d.error && d.result !== "KO") {
+      // Normalize id field
+      if (!d.id && d.series_id) d.id = d.series_id;
+      if (d.id || d.name || d.title) {
+        showDetailsCache.set(sid, d);
+        return d;
+      }
+    }
+  } catch (e) {
+    if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
+    // AUTH_REJECTED from msapi is non-fatal — fall through to legacy endpoints
+    logDebug(`[TV] msapi show details failed for ${sid}: ${e.message}`);
+  }
+
+  // Fallback to legacy api2 endpoints
   for (const ep of [`/show/${sid}?fields=id,name,title,images,poster_image`, `/series/${sid}?fields=id,name,title,images,poster_image`]) {
     try {
       const d = await req(ep);
@@ -1385,55 +1442,114 @@ async function getShowDetails(id) {
   return miss;
 }
 
+/**
+ * Fetch ALL episodes for a show in a single request (confirmed from official web app).
+ * Returns { seasons: [...], episodesBySeason: { 1: [...], 2: [...], ... } }
+ */
+async function getShowAllEpisodes(showId) {
+  const sid = String(showId || "");
+  if (!sid) return { seasons: [], episodesBySeason: {} };
+
+  const cacheKey = `all-episodes:${sid}`;
+  return withCachedResponse({ key: cacheKey, ttlMs: ALL_EPISODES_CACHE_TTL_MS }, async () => {
+    let allEpisodes = [];
+
+    // Primary: msapi single-request endpoint (confirmed from web app)
+    try {
+      const d = await req(`${MSAPI}/v1/series/${sid}/episodes`, { timeout: 12000, noAuthClear: true });
+      allEpisodes = normalizeEpisodeList(d);
+    } catch (e) {
+      if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
+      logDebug(`[TV] msapi episodes failed for ${sid}: ${e.message}`);
+    }
+
+    // Fallback: legacy api2 endpoint (2 attempts max)
+    if (!allEpisodes.length) {
+      const a = await getAuth();
+      if (!a) throw new Error("NOT_LOGGED_IN");
+      for (const ep of [
+        `/user/${a.uid}/show/${sid}/episodes`,
+        `/show/${sid}/episodes`,
+      ]) {
+        try {
+          const d = await req(ep, { timeout: 10000 });
+          allEpisodes = normalizeEpisodeList(d);
+          if (allEpisodes.length) break;
+        } catch (e) {
+          if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
+        }
+      }
+    }
+
+    // Group episodes by season
+    const episodesBySeason = {};
+    const seasonMeta = new Map();
+    for (const ep of allEpisodes) {
+      const sn = parsePositiveInt(ep.season_number ?? ep.season?.number ?? ep.season, 0);
+      if (!sn) continue;
+      if (!episodesBySeason[sn]) episodesBySeason[sn] = [];
+      episodesBySeason[sn].push(ep);
+      const meta = seasonMeta.get(sn) || { total: 0, watched: 0 };
+      meta.total++;
+      if (episodeIsWatched(ep)) meta.watched++;
+      seasonMeta.set(sn, meta);
+    }
+
+    // Sort episodes within each season
+    for (const sn of Object.keys(episodesBySeason)) {
+      episodesBySeason[sn].sort(
+        (a, b) => parsePositiveInt(a.number ?? a.episode_number, 0) - parsePositiveInt(b.number ?? b.episode_number, 0)
+      );
+    }
+
+    // Build seasons array
+    const seasons = Array.from(seasonMeta.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([num, meta]) => ({
+        number: num,
+        season_number: num,
+        nb_episodes: meta.total,
+        episode_count: meta.total,
+        seen_episodes: meta.watched,
+      }));
+
+    return { seasons, episodesBySeason };
+  });
+}
+
 async function getShowSeasons(id) {
   const a = await getAuth();
   if (!a) throw new Error("NOT_LOGGED_IN");
 
   const cacheKey = `show-seasons:${id}`;
   return withCachedResponse({ key: cacheKey, ttlMs: SEASONS_CACHE_TTL_MS }, async () => {
-    const endpoints = [
+    // Try the fast all-episodes path first — derives seasons from episode data
+    try {
+      const result = await getShowAllEpisodes(id);
+      if (result.seasons?.length > 0) {
+        return { seasons: result.seasons };
+      }
+    } catch (e) {
+      if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
+      logDebug(`[TV] all-episodes seasons derivation failed: ${e.message}`);
+    }
+
+    // Fallback: legacy season endpoints (3 most reliable)
+    for (const ep of [
       `/user/${a.uid}/show/${id}/seasons`,
-      `/user/${a.uid}/series/${id}/seasons`,
-      `/user/${a.uid}/shows/${id}/seasons`,
-      `/user/${a.uid}/show/${id}`,
-      `/user/${a.uid}/series/${id}`,
       `/show/${id}/seasons`,
       `/series/${id}/seasons`,
-      `/show/${id}`,
-      `/series/${id}`,
-    ];
-
-    const bySeason = new Map();
-    const settled = await Promise.allSettled(endpoints.map(ep => req(ep)));
-
-    for (const res of settled) {
-      if (res.status !== "fulfilled" || !res.value) continue;
-      const d = res.value;
-      const seasons = normalizeSeasons(d);
-      if (!seasons?.length) continue;
-      for (const season of seasons) {
-        const num = parsePositiveInt(season.number || season.season_number, 0);
-        if (!num) continue;
-        const prev = bySeason.get(num) || {};
-        bySeason.set(num, {
-          ...prev,
-          ...season,
-          number: num,
-          season_number: num,
-          seen_episodes: Math.max(
-            parsePositiveInt(prev.seen_episodes, 0),
-            parsePositiveInt(season.seen_episodes, 0)
-          ),
-          nb_episodes: Math.max(
-            parsePositiveInt(prev.nb_episodes ?? prev.episode_count, 0),
-            parsePositiveInt(season.nb_episodes ?? season.episode_count, 0)
-          ),
-        });
+    ]) {
+      try {
+        const d = await req(ep, { timeout: 10000 });
+        const seasons = normalizeSeasons(d);
+        if (seasons?.length) return { seasons };
+      } catch (e) {
+        if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
       }
     }
 
-    const seasons = Array.from(bySeason.values()).sort((a, b) => a.number - b.number);
-    return { seasons };
+    return { seasons: [] };
   });
 }
 
@@ -1446,89 +1562,54 @@ async function getSeasonEpisodes(showId, seasonNum) {
 
   const cacheKey = `season-episodes:${showId}:${n}`;
   return withCachedResponse({ key: cacheKey, ttlMs: SEASON_EPISODES_CACHE_TTL_MS }, async () => {
-    const endpoints = [
+    // Try to get from the all-episodes cache (single request for entire show)
+    try {
+      const all = await getShowAllEpisodes(showId);
+      if (all.episodesBySeason && all.episodesBySeason[n]?.length) {
+        let episodes = all.episodesBySeason[n];
+
+        // Apply show poster to episodes missing one
+        try {
+          const showDetails = await getShowDetails(showId);
+          if (showDetails && !showDetails.error) {
+            const showPoster = pickPoster(showDetails);
+            const showName = showDetails.name || showDetails.title || "";
+            episodes = episodes.map(ep => ({
+              ...ep,
+              poster: (ep.poster && !isLikelyPlaceholderPoster(ep.poster))
+                ? ep.poster
+                : (pickPoster(ep) || showPoster || ep.poster || ""),
+              show_name: ep.show_name || showName,
+            }));
+          }
+        } catch { /* show details optional */ }
+
+        return { episodes };
+      }
+    } catch (e) {
+      if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
+      logDebug(`[TV] all-episodes season filter failed: ${e.message}`);
+    }
+
+    // Fallback: legacy per-season endpoints (3 most reliable)
+    for (const ep of [
       `/user/${a.uid}/show/${showId}/season/${n}/episodes`,
-      `/user/${a.uid}/series/${showId}/season/${n}/episodes`,
-      `/user/${a.uid}/show/${showId}/seasons/${n}/episodes`,
-      `/user/${a.uid}/series/${showId}/seasons/${n}/episodes`,
-      `/user/${a.uid}/shows/${showId}/season/${n}/episodes`,
-      `/user/${a.uid}/shows/${showId}/seasons/${n}/episodes`,
-      `/user/${a.uid}/show/${showId}/episodes`,
-      `/user/${a.uid}/series/${showId}/episodes`,
-      `/user/${a.uid}/shows/${showId}/episodes`,
-      `/user/${a.uid}/show/${showId}/episodes?season=${n}`,
-      `/user/${a.uid}/series/${showId}/episodes?season=${n}`,
-      `/user/${a.uid}/shows/${showId}/episodes?season=${n}`,
-      `/user/${a.uid}/show/${showId}?fields=seasons.limit(-1)`,
-      `/user/${a.uid}/series/${showId}?fields=seasons.limit(-1)`,
       `/show/${showId}/season/${n}/episodes`,
       `/series/${showId}/season/${n}/episodes`,
-      `/show/${showId}/seasons/${n}/episodes`,
-      `/series/${showId}/seasons/${n}/episodes`,
-      `/show/${showId}/season/${n}/episodes?fields=episodes.fields(id,episode_id,name,title,number,episode_number,season_number,air_date,is_watched,seen,seen_date,images,poster_image,screenshot,still)`,
-      `/series/${showId}/season/${n}/episodes?fields=episodes.fields(id,episode_id,name,title,number,episode_number,season_number,air_date,is_watched,seen,seen_date,images,poster_image,screenshot,still)`,
-      `/show/${showId}/season/${n}`,
-      `/series/${showId}/season/${n}`,
-      `/show/${showId}`,
-      `/series/${showId}`,
-    ];
-
-    const byEpisode = new Map();
-    const settled = await Promise.allSettled(endpoints.map(ep => req(ep)));
-
-    for (const res of settled) {
-      if (res.status !== "fulfilled" || !res.value) continue;
-      const d = res.value;
-      let episodes = episodesFromSeasonPayload(d, n);
-
-      if (!episodes.length) {
-        const allEpisodes = normalizeEpisodeList(d);
-        if (allEpisodes.length) {
-          episodes = allEpisodes.filter(item => {
-            const sn = parsePositiveInt(item.season_number ?? item.season?.number ?? item.season, 0);
-            return sn === n;
-          });
-        }
-      }
-      if (!episodes?.length) continue;
-
-      for (const item of episodes) {
-        const key = episodeKey(item, n);
-        if (!key) continue;
-        const prev = byEpisode.get(key) || {};
-        byEpisode.set(key, mergeEpisode(prev, item, n));
-      }
-    }
-
-    let merged = Array.from(byEpisode.values())
-      .sort((a, b) => parsePositiveInt(a.number ?? a.episode_number, 0) - parsePositiveInt(b.number ?? b.episode_number, 0));
-
-    if (merged.length > 0) {
-      merged = await enrichEpisodesWithDetails(merged);
-
+    ]) {
       try {
-        const showDetails = await getShowDetails(showId);
-        if (showDetails && showDetails.result !== "KO") {
-          const showPoster = pickPoster(showDetails);
-          const showName = showDetails.name || showDetails.title || "";
-          merged.forEach(ep => {
-            if (!ep.poster || isLikelyPlaceholderPoster(ep.poster)) {
-              const current = pickPoster(ep);
-              if (!current || isLikelyPlaceholderPoster(current)) {
-                ep.poster = showPoster;
-              } else {
-                ep.poster = current;
-              }
-            }
-            if (!ep.show_name) ep.show_name = showName;
-          });
+        const d = await req(ep, { timeout: 10000 });
+        const episodes = episodesFromSeasonPayload(d, n);
+        if (episodes?.length) {
+          const enriched = await enrichEpisodesWithDetails(episodes);
+          return { episodes: enriched };
         }
       } catch (e) {
-        logDebug(`[TV] show fallback fetch failed for season episodes: ${e.message}`);
+        if (e.message === "NOT_LOGGED_IN" || e.message === "AUTH_EXPIRED") throw e;
       }
     }
 
-    return { episodes: merged };
+    return { episodes: [] };
   });
 }
 
@@ -1736,6 +1817,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case "preloadDashboard": return await preloadDashboard(request);
         case "getUpNext": return await getUpNext();
         case "getShowDetails": return await getShowDetails(request.showId);
+        case "getShowAllEpisodes": return await getShowAllEpisodes(request.showId);
         case "getShowSeasons": return await getShowSeasons(request.showId);
         case "getSeasonEpisodes": return await getSeasonEpisodes(request.showId, request.seasonNumber);
         case "markWatched": return await markWatched(request.episodeId);
@@ -1753,7 +1835,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return true;
 });
 
-logDebug("[TV] SW v5 loaded");
+logDebug("[TV] SW v6 loaded");
 
 // ========== CONTEXT MENU ==========
 chrome.runtime.onInstalled.addListener(() => {
